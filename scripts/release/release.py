@@ -33,22 +33,39 @@ def _git(*args):
     return subprocess.check_output(["git", *args], text=True)
 
 
-def latest_tag(name):
-    """Latest `<name>-vX.Y.Z` tag by SemVer order, or None."""
-    prefix = f"{name}-v"
-    tags = [t for t in _git("tag", "--list", f"{prefix}*").splitlines() if t]
-    if not tags:
+def _tag_to_version(tag, name):
+    """(major, minor, patch) for a well-formed `<name>-vX.Y.Z` tag, else None."""
+    rest = tag.removeprefix(f"{name}-v")
+    parts = rest.split(".")
+    if len(parts) != 3:
+        return None
+    try:
+        return tuple(int(p) for p in parts)
+    except ValueError:
         return None
 
-    def key(tag):
-        return tuple(int(p) for p in tag[len(prefix):].split("."))
 
-    return max(tags, key=key)
+def _source_subpath(source):
+    """Plugin source dir relative to repo root (strips a leading './')."""
+    return source.removeprefix("./")
+
+
+def latest_tag(name):
+    """Latest well-formed `<name>-vX.Y.Z` tag by SemVer order, or None."""
+    prefix = f"{name}-v"
+    candidates = []
+    for tag in _git("tag", "--list", f"{prefix}*").splitlines():
+        version = _tag_to_version(tag, name) if tag else None
+        if version is not None:
+            candidates.append((version, tag))
+    if not candidates:
+        return None
+    return max(candidates)[1]
 
 
 def commits_since(tag, source):
     """Full messages of commits since `tag` (or all) touching `source`."""
-    path = source.lstrip("./")
+    path = _source_subpath(source)
     rng = f"{tag}..HEAD" if tag else "HEAD"
     out = _git("log", rng, "--format=%B%x00", "--", path)
     return [chunk.strip() for chunk in out.split("\x00") if chunk.strip()]
