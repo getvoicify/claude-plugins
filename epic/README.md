@@ -44,3 +44,23 @@ Merge-through is the default terminal behavior everywhere (`--stop-at-pr` to opt
 out). One child in flight at a time. Worktrees live under `.worktrees/` and are
 swept only after their PR merges. Tunable budget constants are documented in the
 driver command.
+
+## Releasing
+
+Versioning is automated. On every push to `main`, the `release` workflow reads each
+plugin from `.claude-plugin/marketplace.json`, inspects the commits since that plugin's
+last `<name>-v*` tag, and bumps its `version` in `plugin.json` from
+[Conventional Commits](https://www.conventionalcommits.org/):
+
+- `feat: …` → **minor** (`0.1.0` → `0.2.0`)
+- `fix: …` / `perf: …` → **patch** (`0.1.0` → `0.1.1`)
+- `feat!: …` or a `BREAKING CHANGE:` footer → **major** (`0.1.0` → `1.0.0`)
+- `docs` / `chore` / `refactor` / `style` / `ci` / `test` → no release
+
+The workflow commits the bump back to `main` (`chore(release): … [skip ci]`), pushes a
+`<name>-vX.Y.Z` tag, and cuts a GitHub Release with auto-generated notes. Bumping the
+`version` is what makes `/plugin update` deliver the change to installed users — so just
+write Conventional Commits and push; the version takes care of itself.
+
+The first run with no tag seeds a baseline tag at the current `plugin.json` version
+without bumping.

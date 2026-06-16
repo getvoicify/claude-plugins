@@ -3,3 +3,9 @@
 
 # macOS
 .DS_Store
+
+# Python
+__pycache__/
+.pytest_cache/
+pytest-of-*/
+*.pyc

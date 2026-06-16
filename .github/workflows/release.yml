@@ -1,0 +1,62 @@
+name: release
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - name: Compute version bumps
+        id: compute
+        run: |
+          results="$(python scripts/release/release.py)"
+          echo "results=$results" >> "$GITHUB_OUTPUT"
+          echo "$results" | python -m json.tool
+
+      - name: Commit, tag, and release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RESULTS: ${{ steps.compute.outputs.results }}
+        run: |
+          set -euo pipefail
+          if [ "$(echo "$RESULTS" | jq 'length')" -eq 0 ]; then
+            echo "No releases."; exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          echo "$RESULTS" | jq -c '.[]' | while read -r row; do
+            name=$(echo "$row" | jq -r .name)
+            ver=$(echo "$row" | jq -r .version)
+            bump=$(echo "$row" | jq -r .bump)
+            src=$(echo "$row" | jq -r .source)
+            tag="${name}-v${ver}"
+            if [ "$bump" != "bootstrap" ]; then
+              git add "${src#./}/.claude-plugin/plugin.json"
+              git commit -m "chore(release): ${name} v${ver} [skip ci]"
+            fi
+            git tag -a "$tag" -m "${name} v${ver}"
+          done
+          git push origin HEAD:main --follow-tags
+          echo "$RESULTS" | jq -c '.[]' | while read -r row; do
+            name=$(echo "$row" | jq -r .name)
+            ver=$(echo "$row" | jq -r .version)
+            tag="${name}-v${ver}"
+            gh release create "$tag" --title "${name} v${ver}" --generate-notes
+          done
