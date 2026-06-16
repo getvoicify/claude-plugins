@@ -26,3 +26,22 @@ def classify(message):
     if commit_type in _PATCH_TYPES:
         return "patch"
     return None
+
+
+_PRECEDENCE = {"major": 3, "minor": 2, "patch": 1}
+
+
+def next_version(current, messages):
+    """Return (new_version, bump) or (None, None) if no release is warranted."""
+    bumps = [b for b in (classify(m) for m in messages) if b]
+    if not bumps:
+        return (None, None)
+    bump = max(bumps, key=_PRECEDENCE.__getitem__)
+    major, minor, patch = (int(p) for p in current.split("."))
+    if bump == "major":
+        major, minor, patch = major + 1, 0, 0
+    elif bump == "minor":
+        minor, patch = minor + 1, 0
+    else:
+        patch += 1
+    return (f"{major}.{minor}.{patch}", bump)
