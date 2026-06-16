@@ -202,6 +202,38 @@ State: bot in `reviewRequests` → **requested, pending**; bot absent everywhere
 **not requested**; bot in `latestReviews`/`reviews` → **reviewed** (then walk
 `reviewThreads` above for its unresolved comments).
 
+## Claude Review action (PRIMARY review gate)
+
+The `claude-review` workflow (`.github/workflows/claude-review.yml`) reviews the latest
+head of every non-draft PR, posts inline comments, submits a formal
+APPROVE / REQUEST_CHANGES review, and exposes a REQUIRED status check named
+`claude-review`. The check is the authoritative gate (it is **fail-closed**: a missing
+verdict is red); the formal review is the human-visible verdict. Read both on the
+LATEST head.
+
+Read the `claude-review` check conclusion on the head commit (definitive pass/fail):
+
+```bash
+gh pr view <pr#> --json statusCheckRollup \
+  --jq '.statusCheckRollup[] | select(.name=="claude-review" or .context=="claude-review") | {name, status, conclusion}'
+```
+
+`conclusion == "SUCCESS"` → **approved (green)**; `FAILURE` → **changes requested
+(red)**; `null`/`status != "COMPLETED"` → **pending** (still reviewing the head; wait,
+do not arm `--auto`). Cross-check the formal review state and read the review body +
+inline comments to drive fixes:
+
+```bash
+gh pr view <pr#> --json reviews \
+  --jq '[.reviews[] | select(.author.login | test("claude|github-actions"))] | last | {state, body}'
+```
+
+`state == "CHANGES_REQUESTED"` → address every inline comment + the body, push, and
+wait for the re-review of the new head (each push re-triggers the action and supersedes
+the prior run via the per-PR concurrency group). `APPROVED` + green check → gate
+satisfied. The exact check `name` GitHub reports is the job id (`claude-review`);
+verify it once against `statusCheckRollup` if a repo renames the job.
+
 ## Issue types
 
 Org has Task / Bug / Feature (+ Epic once created — requires `admin:org` scope or org
