@@ -72,8 +72,8 @@ repo the CURRENT child lives in. Missing file → STOP: "repo <owner/name> has n
 `.claude/epic.yaml` — author it before driving children there."
 
 Honor the target repo's `CLAUDE.md` and global CLAUDE.md throughout every drive (TDD,
-context-mode routing, CodeRabbit CLI, GitHub Copilot review, etc. — `toolchain.notes`
-summarizes per-repo specifics but does not replace them).
+context-mode routing, the Claude Review action gate, GitHub Copilot review, etc. —
+`toolchain.notes` summarizes per-repo specifics but does not replace them).
 
 ### Checkout resolution (cross-repo children)
 
@@ -166,15 +166,23 @@ required prefix resolves empty (e.g. JAVA_HOME on gangan-mobile).
 5. **`pre-review` gates**: run each `custom_gates` entry whose hook is `pre-review`
    and whose `required_when` matches this child. Failure → interactive: STOP and hand
    off; `run`: park.
-6. **Reviews**: CodeRabbit CLI on the diff → spec-compliance reviewer (read-only
-   subagent) → quality reviewer. Implementer fixes; re-review until ALL THREE gate
-   set clean — CodeRabbit AND both subagents (spec-compliance, quality). Copilot is
-   NOT part of this set: it is requested at PR time (step 7) and gated in the merge
-   fix-loop. Trust-but-verify every subagent summary.
+6. **Pre-PR adversarial reviews**: run two read-only subagents framed as
+   devil's-advocate critics — a spec-compliance reviewer (does the diff FULLY
+   satisfy the child's spec/runbook, no gaps?) and a quality reviewer (logic bugs,
+   security, missing tests, repo-convention violations). Implementer fixes;
+   re-review until BOTH are clean. Trust-but-verify every subagent summary. The
+   local CodeRabbit CLI pass is RETIRED here — the **Claude Review action** is now
+   the primary post-PR review gate (fires automatically on PR open, step 7; gated
+   in the merge phase, step 3). CodeRabbit's bot review and Copilot are likewise
+   gated in the merge phase, not run locally pre-PR.
 7. **PR**: rebase on `origin/main`; `gh pr create` → base `main`, body `Closes #<n>`
    (same-repo — children's PRs always close issues in their own repo), summary, test
    plan including every `pr-test-plan` gate's record. Comment the PR URL on the
-   child. When `copilot_review` is enabled, request a Copilot review via the
+   child. Opening the PR automatically triggers the **Claude Review action**
+   (`.github/workflows/claude-review.yml` — the `claude-review` required check): it
+   reviews the head, posts inline comments, and submits a formal APPROVE /
+   REQUEST_CHANGES review; it is the PRIMARY review gate driven in step 3. When
+   `copilot_review` is enabled, request a Copilot review via the
    `requested_reviewers` call in the reference's "Review threads + Copilot review"
    section; a 422 means Copilot review is not available on this repo → treat Copilot
    as **N/A** (do not gate on it) and note that. Record whether the request succeeded
@@ -183,7 +191,10 @@ required prefix resolves empty (e.g. JAVA_HOME on gangan-mobile).
 ### 3. Merge phase (default) — or stop
 
 **If `--stop-at-pr`:** report (child, worktree, branch, PR URL, gates, reviews —
-including CodeRabbit status, and a **Copilot status** field = one of "not requested" /
+including a **Claude review status** field = one of "pending" / "approved (green)" /
+"changes requested (red)" derived from the `claude-review` check conclusion + the
+formal review state (see the reference's "Claude Review action" section), CodeRabbit
+status, and a **Copilot status** field = one of "not requested" /
 "requested, pending" / "clean" / "N/A (not enabled)" with any unresolved comment
 count, derived from the Copilot review-state query in the reference) and STOP.
 Worktree stays intact. Status stays In Review. No `--auto` was armed (it is armed only
@@ -194,6 +205,13 @@ satisfied. Do NOT arm it at the start (an armed PR would merge the instant CI go
 green with findings still open).
 
 1. **Prose-gate resolution (BEFORE arming `--auto`):** drive these to clean first —
+   - **Claude Review action (PRIMARY gate)** → the `claude-review` required check
+     carries Claude's verdict on the LATEST head: red = REQUEST_CHANGES (or no
+     verdict — the check is fail-closed), green = APPROVE. On REQUEST_CHANGES, read
+     the inline review comments + the formal review body, address them via the
+     implementer, push, then wait for the re-review of the new head (every push
+     re-triggers it). Budget `CLAUDE_REVIEW_FIX_ROUNDS`. NEVER arm `--auto` while
+     `claude-review` is red.
    - CodeRabbit `CHANGES_REQUESTED` (where review/approval is required) → address via
      implementer, push; each push dismisses stale approvals — always wait for review
      of the LATEST head. Budget `CODERABBIT_FIX_ROUNDS`.
@@ -238,7 +256,8 @@ PR map, `git worktree list`). **Never STOP or park with auto-merge armed unless 
 prose gate is confirmed satisfied** — on any park/STOP that leaves a PR behind while
 `--auto` is armed, run `gh pr merge <pr> --disable-auto` first and record it in the
 FAILED/park comment. Tunables (do not exceed): `CI_ESTIMATE=420s`,
-`CI_FIX_ROUNDS=3`, `CODERABBIT_FIX_ROUNDS=3`, `COPILOT_FIX_ROUNDS=3`,
+`CI_FIX_ROUNDS=3`, `CLAUDE_REVIEW_FIX_ROUNDS=3`, `CODERABBIT_FIX_ROUNDS=3`,
+`COPILOT_FIX_ROUNDS=3`,
 `CONFLICT_ATTEMPTS=2`, `MERGE_WAIT_CYCLES=4`, `MAX_WAIT_CYCLES=12`,
 `GLOBAL_PARK_THRESHOLD=3`, `CONSECUTIVE_PARK_HALT=2`.
 
