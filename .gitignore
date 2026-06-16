@@ -7,4 +7,5 @@
 # Python
 __pycache__/
 .pytest_cache/
+pytest-of-*/
 *.pyc
