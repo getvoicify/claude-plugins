@@ -1,0 +1,46 @@
+# epic — unified GitHub epic driver
+
+Drives GitHub epics one child at a time across the gangan repos, using native
+**sub-issues** for hierarchy, native **blocked-by relations** for dependencies, and
+**org Project #2 ("Gangan")** for live status. Replaces the per-repo
+`.claude/commands/epic.md` variants in gangan-mobile and gangan-api.
+
+## Commands
+
+| Command | Purpose |
+|---|---|
+| `/epic <epic#> [status\|next\|run\|<child#>] [--stop-at-pr]` | Drive an epic. `next`/`<child#>` take one child through merge + sweep (or stop at PR with `--stop-at-pr`); `run` loops autonomously to completion. |
+| `/epic:create [rough idea]` | Brainstorm session → spec + runbook (docs PR) → epic + sub-issues + dependencies + Project items. Nothing touches GitHub until you approve the breakdown. |
+| `/epic:migrate <epic#> [--repo owner/name]` | Convert a legacy task-list epic (e.g. gangan-api #278–#282) to the new model. |
+
+## Architecture
+
+- **Epic home**: new epics live in `getvoicify/gangan` (planning repo); children live
+  in their working repos as cross-repo sub-issues. Legacy epics stay where they are.
+- **Two-layer config**:
+  - Per-epic: a slim fenced `epic-config` YAML block in the epic issue body
+    (`epic`, `repo`, `docs_repo`, `worktree_prefix`, `spec`, `runbook`, `custom_gates`).
+  - Per-repo: `.claude/epic.yaml` in each working repo — toolchain, verified
+    merge-gate facts (required checks, approvals, thread resolution), docs dirs,
+    worktree policy, and the custom-gate catalog. Adding a gate = a PR to that repo,
+    not a plugin release.
+- **Status tracking**: the driver writes Project Status transitions
+  (Todo → In Progress → In Review → Done, or Parked) at each lifecycle point. No
+  body-checkbox editing — sub-issue closure updates `subIssuesSummary` automatically.
+- **Reference**: `references/github-graphql.md` holds every GraphQL incantation,
+  verified project/field IDs, the PR-mapping rule, and API gotchas.
+
+## Requirements
+
+- `gh` CLI authenticated with scopes `repo, project, read:org`.
+- Local checkouts of the working repos as siblings (the driver resolves a child's
+  checkout by matching `origin` URLs in the cwd's parent directory).
+- Each working repo carries `.claude/epic.yaml` (gangan-api, gangan-mobile,
+  gangan-angular-workspace: done 2026-06-10).
+
+## Defaults
+
+Merge-through is the default terminal behavior everywhere (`--stop-at-pr` to opt
+out). One child in flight at a time. Worktrees live under `.worktrees/` and are
+swept only after their PR merges. Tunable budget constants are documented in the
+driver command.

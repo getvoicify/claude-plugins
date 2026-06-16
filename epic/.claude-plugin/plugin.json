@@ -1,0 +1,9 @@
+{
+  "name": "epic",
+  "version": "0.1.0",
+  "description": "Unified GitHub epic driver: drive epics via sub-issues + org ProjectV2, brainstorm new epics into existence, migrate legacy task-list epics",
+  "author": {
+    "name": "Tom (verygreenboi)"
+  },
+  "keywords": ["github", "epic", "projects", "sub-issues", "automation"]
+}
