@@ -53,7 +53,7 @@ jobs:
             fi
             git tag -a "$tag" -m "${name} v${ver}"
           done
-          git push origin HEAD --follow-tags
+          git push origin HEAD:main --follow-tags
           echo "$RESULTS" | jq -c '.[]' | while read -r row; do
             name=$(echo "$row" | jq -r .name)
             ver=$(echo "$row" | jq -r .version)
