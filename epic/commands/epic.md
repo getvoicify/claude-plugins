@@ -112,6 +112,29 @@ the operator to clone it; never drive via API-only edits.
 5. **Auto-clean on merge ONLY**: never remove mid-flight/on-failure/at STOP; remove
    only after the child's PR is MERGED.
 
+## Epic-completion lifecycle (all modes)
+
+The epic issue has its OWN item on org Project #2 — the driver owns its Status just
+like the children's. Every invocation MUST observe it: fetch the epic node's
+`projectItems` + Status alongside the sub-issues (the discovery query in the reference
+includes it); epic not on Project #2 → `addProjectV2ItemById` (idempotent) before any
+Status write. Definitions used by every rule below: a child is **parked-open** when its
+issue is OPEN with Project Status = Parked; the epic is **complete** when EVERY
+sub-issue's `state == CLOSED` (iterate `subIssues.nodes[].state` — do NOT use
+`subIssuesSummary.completed`, which can undercount closed-as-not-planned children).
+
+1. **Drift self-heal**: epic issue CLOSED **and** complete, but its Project Status ≠
+   Done → set it to Done immediately — in every mode EXCEPT plain `status` without
+   `--sweep`, which only REPORTS the drift (read-only contract). Epic CLOSED while any
+   child is still OPEN → anomaly (likely human-closed early): REPORT it, never stamp
+   Done, never auto-reopen.
+2. **Completion**: in `next` / `<child#>` / `run`, when the epic is observed complete (typically because the
+   last child's merge + sweep closed it, and no child is parked-open), finish the epic: close the
+   epic issue IF still open
+   (`gh issue close <epic#> --repo <repo> --comment "All children closed — epic complete."`)
+   and set the epic's own Project Status = **Done**. `status --sweep` may repair the
+   epic item's Status but NEVER closes the epic issue — closing is a drive-mode action.
+
 ## Mode: `status`
 
 Report only — no driving, and **read-only by default** (mutates NOTHING unless
@@ -125,9 +148,9 @@ Report only — no driving, and **read-only by default** (mutates NOTHING unless
    Project field — REPORT the drift, reality wins; only repair the field under
    `--sweep`), blockers and whether each is satisfied; then WIP count vs cap, and the
    **next-eligible child** (lowest sub-issue position whose blockers are all satisfied,
-   skipping parked).
+   skipping parked). Also report the EPIC's own Project Status: epic CLOSED+complete with Status ≠ Done (drift; sweep-fixable), epic OPEN but complete (finish via a drive mode), and epic CLOSED with open children (anomaly; report only — never sweep-fixable).
 4. **Reconcile + sweep** — gated behind `--sweep` (HARD: nothing here runs without it):
-   fix stale Project Status values; remove a worktree ONLY if a PR whose
+   fix stale Project Status values (children AND the epic's own item — an epic that is CLOSED and complete gets Status=Done; `--sweep` never closes the epic issue); remove a worktree ONLY if a PR whose
    `closingIssuesReferences` includes that child is MERGED (then prune + delete the
    local branch). Without `--sweep`, do NONE of this — instead list exactly what
    `--sweep` WOULD remove/fix (drifted fields, mergeable-worktree removals). Then STOP.
@@ -231,7 +254,9 @@ green with findings still open).
      Conflicts are never terminal until the budget is exhausted.
    - a stuck CI check that never posts a verdict → poll up to `MAX_WAIT_CYCLES`.
 3. On MERGED (verify `state == MERGED`): confirm the child issue auto-closed (close it
-   if not), Status = **Done**, sweep the worktree (remove + prune + delete branch).
+   if not), Status = **Done**, sweep the worktree (remove + prune + delete branch). If this was the LAST child (epic now complete: every sub-issue `state == CLOSED`,
+   none parked-open), apply the epic-completion rule: close the epic issue if still
+   open and set the epic's own Project Status = **Done**.
 4. Report and STOP (interactive modes drive ONE child only).
 
 Budgets exhausted (interactive) → STOP with a precise diagnostic; leave PR + worktree.
@@ -261,8 +286,7 @@ FAILED/park comment. Tunables (do not exceed): `CI_ESTIMATE=420s`,
 `CONFLICT_ATTEMPTS=2`, `MERGE_WAIT_CYCLES=4`, `MAX_WAIT_CYCLES=12`,
 `GLOBAL_PARK_THRESHOLD=3`, `CONSECUTIVE_PARK_HALT=2`.
 
-**Per-cycle:** recover & select (no eligible, unparked child left → final report,
-TERMINATE) → resume check (open PR from a prior cycle → verify worktree/branch
+**Per-cycle:** recover & select (no eligible, unparked child left → if the epic is complete (all children CLOSED, none parked-open) apply the epic-completion rule (close epic if open + epic Status=Done); then final report, TERMINATE) → resume check (open PR from a prior cycle → verify worktree/branch
 integrity, then jump to fix-loop; closed-unmerged PR with worktree present →
 closed-unmerged PR recovery) → preflight HARD checks → drive to PR → merge phase → on
 MERGED: Status=Done + sweep → reschedule next cycle (`ScheduleWakeup`). On resume into a
