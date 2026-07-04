@@ -53,6 +53,34 @@ created on GitHub until the operator approves the full breakdown in phase 4.
      play, TDD order, verification commands (use the repo's `toolchain`), gate notes.
 3. Present both drafts for operator review. Iterate until approved.
 
+## Phase 3b — Adversarial stress-test (iterate to a clean round)
+
+After the operator approves the drafts and BEFORE the phase-4 materialization gate,
+stress-test the spec + runbook with read-only adversarial reviewer subagents framed
+as devil's-advocate critics. Three lenses, dispatched in parallel each round:
+
+- **Reality pin**: every load-bearing claim checked against the implicated repos'
+  actual code — file paths, module names, API contracts, flag names, toolchain
+  commands, "X already does Y" assertions. Cite file:line for each verdict.
+- **Decomposition**: children crisply sized (≤ ~1 day, one repo, one PR), DAG sound
+  (no hidden cross-child coupling, contract-first ordering holds), nothing missing
+  that the spec's success criteria require, gates tagged per each repo's catalog.
+- **Executability**: the runbook's per-child recipe is drivable by a session that
+  reads ONLY that child + spec + runbook — TDD seams real, verification commands
+  runnable, no step that presumes unstated context.
+
+**Blocking** = a defect that would cause a driver session to build the wrong thing
+or fail verification, or leave the epic's success criteria unmet (false claim,
+unsound DAG, undrivable step, missing child); everything else is a **residual** (nit). Fix blocking findings by editing the drafts, then RE-RUN
+all three lenses on the amended drafts. One round is rarely enough — fixes
+introduce new defects and unblock deeper reads. Loop until a round returns ZERO
+blocking findings (a clean round), budget `SPEC_REVIEW_ROUNDS` (default 3).
+Residuals from the clean round go into the docs-PR body note (phase 5); budget
+exhausted with blocking findings still open → present them to the operator as
+explicit open questions; never silently drop findings of either kind. Material
+amendments (scope, contract, child set) → re-present the changed sections to the
+operator before phase 4.
+
 ## Phase 4 — Review (the gate before anything touches GitHub)
 
 Present the complete materialization plan as one table: child title · repo ·
@@ -62,7 +90,8 @@ operator can override). Require explicit approval. Any edit → update and re-pr
 ## Phase 5 — Materialize (only after approval)
 
 1. **Docs PR**: push the branch, `gh pr create` in `docs_repo` (conventional commit
-   subject per that repo's standards). Record the PR URL.
+   subject per that repo's standards); note the phase-3b stress-test outcome (rounds
+   run, residual open questions if any) in the PR body. Record the PR URL.
 2. **Epic issue** in `getvoicify/gangan`: title `Epic: <name>`; body = a short
    abstract, link to spec/runbook paths + docs PR, and the fenced `epic-config`:
 

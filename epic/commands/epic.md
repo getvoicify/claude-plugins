@@ -181,9 +181,18 @@ required prefix resolves empty (e.g. JAVA_HOME on gangan-mobile).
 1. **Worktree** per HARD constraints.
 2. **Context**: `gh issue view` the child; read `spec` + `runbook` from the
    `docs_repo` checkout. Do NOT skim sibling children.
-3. **Step-1 pin**: verify the child's load-bearing claims against the relevant
-   sources (other repos' code for API contracts; never curl — use the sandbox runner
-   or `gh`). Post the pin as a child-issue comment before any code.
+3. **Step-1 pin (adversarial, iterative)**: dispatch a read-only adversarial
+   reviewer subagent to attack the child's spec/runbook slice against current
+   reality — verify every load-bearing claim against the relevant sources (other
+   repos' code for API contracts, `origin/main` for drift since the docs merged;
+   never curl — use the sandbox runner or `gh`). Where it finds defects, amend the
+   plan via the pin (merged docs are not edited), then RE-RUN the reviewer on the
+   amended plan — one round is often not enough. Loop until a round returns zero
+   BLOCKING findings (blocking = would cause the drive to build the wrong thing or
+   fail verification; everything else is a residual), budget `PLAN_REVIEW_ROUNDS`
+   (default 3); exhausted with blocking findings still open → interactive: STOP and
+   hand off; `run`: park. Post the final pin — verified claims, every amendment,
+   AND any residual findings — as a child-issue comment before any code.
 4. **Implementer subagent**: TDD per runbook — failing tests first, implement, full
    suite green (toolchain commands from epic.yaml), commit.
 5. **`pre-review` gates**: run each `custom_gates` entry whose hook is `pre-review`
@@ -192,8 +201,13 @@ required prefix resolves empty (e.g. JAVA_HOME on gangan-mobile).
 6. **Pre-PR adversarial reviews**: run two read-only subagents framed as
    devil's-advocate critics — a spec-compliance reviewer (does the diff FULLY
    satisfy the child's spec/runbook, no gaps?) and a quality reviewer (logic bugs,
-   security, missing tests, repo-convention violations). Implementer fixes;
-   re-review until BOTH are clean. Trust-but-verify every subagent summary. The
+   security, missing tests, repo-convention violations). Implementer fixes; re-run BOTH
+   reviewers on the amended diff until a single round returns zero BLOCKING findings
+   from both (same blocking definition as step 3; residual nits are recorded in the
+   PR body, not loop fuel) — one round is often not enough (a fix can introduce new
+   defects). Budget
+   `PRE_PR_REVIEW_ROUNDS` (default 3); exhausted with blocking findings open → interactive:
+   STOP and hand off; `run`: park. Trust-but-verify every subagent summary. The
    local CodeRabbit CLI pass is RETIRED here — the **Claude Review action** is now
    the primary post-PR review gate (fires automatically on PR open, step 7; gated
    in the merge phase, step 3). CodeRabbit's bot review and Copilot are likewise
@@ -281,7 +295,8 @@ PR map, `git worktree list`). **Never STOP or park with auto-merge armed unless 
 prose gate is confirmed satisfied** — on any park/STOP that leaves a PR behind while
 `--auto` is armed, run `gh pr merge <pr> --disable-auto` first and record it in the
 FAILED/park comment. Tunables (do not exceed): `CI_ESTIMATE=420s`,
-`CI_FIX_ROUNDS=3`, `CLAUDE_REVIEW_FIX_ROUNDS=3`, `CODERABBIT_FIX_ROUNDS=3`,
+`CI_FIX_ROUNDS=3`, `PLAN_REVIEW_ROUNDS=3`, `PRE_PR_REVIEW_ROUNDS=3`,
+`CLAUDE_REVIEW_FIX_ROUNDS=3`, `CODERABBIT_FIX_ROUNDS=3`,
 `COPILOT_FIX_ROUNDS=3`,
 `CONFLICT_ATTEMPTS=2`, `MERGE_WAIT_CYCLES=4`, `MAX_WAIT_CYCLES=12`,
 `GLOBAL_PARK_THRESHOLD=3`, `CONSECUTIVE_PARK_HALT=2`.
