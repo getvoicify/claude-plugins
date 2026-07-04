@@ -68,6 +68,7 @@ Read children of an epic (works cross-repo; paginate past 50):
 ```graphql
 { repository(owner:"<owner>", name:"<repo>") { issue(number:<epic#>) {
     id title state
+    projectItems(first: 5) { nodes { id project { number } fieldValueByName(name:"Status") { ... on ProjectV2ItemFieldSingleSelectValue { name } } } }
     issueType { name }
     subIssuesSummary { total completed }
     subIssues(first: 50, after: <cursor|null>) {
@@ -126,6 +127,8 @@ idempotent (returns the existing item) — safe to call blindly.
 | PR opened | In Review |
 | PR merged + swept | Done |
 | parked (circuit breaker) | Parked |
+| epic complete (last child merged + swept, none parked-open) — drive modes only | close epic issue if open; epic's own item → Done |
+| epic CLOSED + complete but its item ≠ Done | epic's own item → Done (self-heal; plain `status` without `--sweep` only reports) |
 
 ## PR-mapping rule (child → PR, used by status + sweep)
 
