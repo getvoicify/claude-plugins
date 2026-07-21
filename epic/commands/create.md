@@ -7,8 +7,8 @@ You are running an epic-creation brainstorm. The input is a rough idea (from
 `$ARGUMENTS` or asked for if empty); the product is a fully materialized epic: a
 reviewed spec + runbook landed via a docs PR, an epic issue in the planning repo
 `getvoicify/gangan` with a slim `epic-config` block, child issues in their working
-repos linked as sub-issues with native blocked-by relations, and every item on org
-Project #2 with Status/Priority set.
+repos linked as sub-issues with native blocked-by relations, and every item on
+the configured org project (epic-config `project`, default #2) with Status/Priority set.
 
 Read `${CLAUDE_PLUGIN_ROOT}/references/github-graphql.md` before the materialize
 phase — it has every mutation, ID, and gotcha (`blockingIssueId`, not
@@ -98,6 +98,7 @@ operator can override). Require explicit approval. Any edit → update and re-pr
    ```yaml
    epic: <assigned after creation — edit the body to backfill>
    repo: getvoicify/gangan
+   project: <org ProjectV2 number — omit to default to 2 (Gangan)>
    docs_repo: <owner/name>
    worktree_prefix: <kebab>
    spec: <docs.spec_dir>/<file>.md
@@ -112,7 +113,7 @@ operator can override). Require explicit approval. Any edit → update and re-pr
    - `addSubIssue` each to the epic (cross-repo works);
    - `reprioritizeSubIssue` to match the agreed drive order;
    - `addBlockedBy` per the dependency graph;
-   - add epic + every child to Project #2 (`addProjectV2ItemById`, idempotent),
+   - add epic + every child to the configured project (epic-config `project`, default #2) (`addProjectV2ItemById`, idempotent),
      set Status = Todo and the agreed Priority on each.
 4. **Verify** (trust-but-verify your own mutations): re-query the epic's `subIssues`
    + each child's `blockedBy` + `projectItems` and diff against the approved plan.

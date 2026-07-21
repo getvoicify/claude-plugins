@@ -3,27 +3,36 @@
 Verified live against the `getvoicify` org on 2026-06-10. All commands in this plugin
 share these incantations. Run everything through `gh api graphql` (never curl/wget).
 
-## Constants (fast-path cache — re-resolve at runtime if any query 404s)
+## Constants (fast-path cache — re-resolve at runtime if any query 404s or when `epic-config.project` ≠ 2)
 
 | Thing | Value |
 |---|---|
 | Planning repo (default epic home) | `getvoicify/gangan` |
-| Org project | number **2** ("Gangan") |
+| Org project (default; override via epic-config `project`) | number **2** ("Gangan") |
 | `projectId` | `PVT_kwDOBw1T1M4BaShO` |
 | Status field id | `PVTSSF_lADOBw1T1M4BaShOzhVLLe8` |
 | Status options | Todo `d36861b6` · In Progress `8d20dd23` · In Review `3c61b8ea` · Done `9d096808` · Parked `bc4e1fe5` |
 | Priority field id | `PVTSSF_lADOBw1T1M4BaShOzhVLc2k` |
 | Priority options | P0 `714602c0` · P1 `bc09f009` · P2 `88d520fc` |
 
+**The `projectId` + Status/Priority field & option ids above are the fast-path cache
+for the default project (number 2) only.** When `epic-config.project` names a different
+project, ignore these cached ids and resolve them at runtime via the re-resolution query
+below (substituting the configured number).
+
 Re-resolution query when an ID has gone stale:
 
 ```graphql
-{ organization(login:"getvoicify") { projectV2(number:2) {
+{ organization(login:"getvoicify") { projectV2(number:<project>) {   # <project> = epic-config.project, default 2
     id
     status: field(name:"Status")   { ... on ProjectV2SingleSelectField { id options { id name } } }
     priority: field(name:"Priority"){ ... on ProjectV2SingleSelectField { id options { id name } } }
 } } }
 ```
+
+If the configured project has no `Status`/`Priority` single-select field, or is missing
+the expected option names, **STOP and surface in interactive/attended mode, or park the
+child (Status → Parked) in `run` mode** — NEVER fall back to the cached project-2 ids.
 
 ## Error handling (extends the 404 / re-resolve note above)
 
@@ -115,7 +124,8 @@ mutation { updateProjectV2ItemFieldValue(input: {
 ```
 
 Find an issue's existing project item without re-adding: use `projectItems(first:5)`
-on the Issue node and filter `project { number } == 2`. `addProjectV2ItemById` is
+on the Issue node and filter `project { number } == <project>` (the configured
+epic-config `project`, default 2). `addProjectV2ItemById` is
 idempotent (returns the existing item) — safe to call blindly.
 
 **Lifecycle transitions the driver MUST write:**

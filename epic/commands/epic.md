@@ -5,7 +5,7 @@ argument-hint: "<epic#> [status | next | run | <child#>] [--stop-at-pr] [--sweep
 
 You are driving a GitHub epic. Epics are issues with **native sub-issues** as children
 and **native blocked-by relations** as the dependency graph; live state is tracked in
-**org Project #2 ("Gangan")**. New epics are homed in the planning repo
+**the configured org project** (epic-config `project`, default #2 "Gangan"). New epics are homed in the planning repo
 `getvoicify/gangan`; children live in the working repos. Legacy epics may be homed
 elsewhere — the `repo` field of the epic-config decides.
 
@@ -41,9 +41,12 @@ invocation loops the same per-child mechanics autonomously until the epic is don
    (if not found there, try the cwd repo — legacy epics are homed in working repos).
 2. Parse the fenced `epic-config` YAML block STRICTLY (python + pyyaml via the sandbox
    runner; `pip install --break-system-packages --quiet pyyaml` only on ImportError;
-   never regex-only extraction). Required keys:
+   never regex-only extraction). Keys:
    - `epic` (int) — must equal `<epic#>` (mismatch → STOP).
    - `repo` (`owner/name`) — where THIS epic issue lives.
+   - `project` (int, optional) — org ProjectV2 number for status tracking; omit to
+     default to `2` (Gangan). When set to another number, the driver re-resolves
+     projectId + field & option ids at runtime (see github-graphql.md).
    - `docs_repo` (`owner/name`) — working repo where `spec`/`runbook` paths resolve.
    - `worktree_prefix` — must match `^[a-z0-9]+(-[a-z0-9]+)*$` (else STOP: "invalid
      worktree_prefix (must be kebab-case)"); guards every shell interpolation.
@@ -114,10 +117,10 @@ the operator to clone it; never drive via API-only edits.
 
 ## Epic-completion lifecycle (all modes)
 
-The epic issue has its OWN item on org Project #2 — the driver owns its Status just
+The epic issue has its OWN item on the configured org project (epic-config `project`, default #2) — the driver owns its Status just
 like the children's. Every invocation MUST observe it: fetch the epic node's
 `projectItems` + Status alongside the sub-issues (the discovery query in the reference
-includes it); epic not on Project #2 → `addProjectV2ItemById` (idempotent) before any
+includes it); epic not on the configured project → `addProjectV2ItemById` (idempotent) before any
 Status write. Definitions used by every rule below: a child is **parked-open** when its
 issue is OPEN with Project Status = Parked; the epic is **complete** when EVERY
 sub-issue's `state == CLOSED` (iterate `subIssues.nodes[].state` — do NOT use
