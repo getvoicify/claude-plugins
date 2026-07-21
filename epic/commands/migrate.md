@@ -68,7 +68,9 @@ for the slim config (default: the repo the epic lives in).
      present — a crash between rewrite and backup would lose the legacy edges/ticks
      irrecoverably, so the order is non-negotiable.
    - ONLY THEN rewrite the body: replace the fat `epic-config` with the slim schema
-     (`epic`, `repo`, `docs_repo`, `worktree_prefix`, `spec`, `runbook`, `custom_gates`, and optional `project`);
+     (`epic`, `repo`, `docs_repo`, `worktree_prefix`, `spec`, `runbook`, `custom_gates`, and optional `project`)
+     — when the epic tracks a NON-DEFAULT board, the slim config MUST carry `project: <n>` so future
+     `/epic` runs track the same project number;
    - DELETE the task-list section and the `## Dependency model` section (their data
      now lives in sub-issues/relations — leaving them would create dual sources of
      truth);

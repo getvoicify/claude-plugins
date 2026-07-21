@@ -46,7 +46,7 @@ invocation loops the same per-child mechanics autonomously until the epic is don
    - `repo` (`owner/name`) — where THIS epic issue lives.
    - `project` (int, optional) — org ProjectV2 number for status tracking; omit to
      default to `2` (Gangan). When set to another number, the driver re-resolves
-     projectId + field ids at runtime (see github-graphql.md).
+     projectId + field & option ids at runtime (see github-graphql.md).
    - `docs_repo` (`owner/name`) — working repo where `spec`/`runbook` paths resolve.
    - `worktree_prefix` — must match `^[a-z0-9]+(-[a-z0-9]+)*$` (else STOP: "invalid
      worktree_prefix (must be kebab-case)"); guards every shell interpolation.
