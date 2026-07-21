@@ -41,7 +41,7 @@ invocation loops the same per-child mechanics autonomously until the epic is don
    (if not found there, try the cwd repo — legacy epics are homed in working repos).
 2. Parse the fenced `epic-config` YAML block STRICTLY (python + pyyaml via the sandbox
    runner; `pip install --break-system-packages --quiet pyyaml` only on ImportError;
-   never regex-only extraction). Required keys:
+   never regex-only extraction). Keys:
    - `epic` (int) — must equal `<epic#>` (mismatch → STOP).
    - `repo` (`owner/name`) — where THIS epic issue lives.
    - `project` (int, optional) — org ProjectV2 number for status tracking; omit to

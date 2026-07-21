@@ -3,7 +3,7 @@
 Verified live against the `getvoicify` org on 2026-06-10. All commands in this plugin
 share these incantations. Run everything through `gh api graphql` (never curl/wget).
 
-## Constants (fast-path cache — re-resolve at runtime if any query 404s)
+## Constants (fast-path cache — re-resolve at runtime if any query 404s or when `epic-config.project` ≠ 2)
 
 | Thing | Value |
 |---|---|
@@ -29,6 +29,10 @@ Re-resolution query when an ID has gone stale:
     priority: field(name:"Priority"){ ... on ProjectV2SingleSelectField { id options { id name } } }
 } } }
 ```
+
+If the configured project has no `Status`/`Priority` single-select field, or is missing
+the expected option names, **STOP and surface in interactive/attended mode, or park the
+child (Status → Parked) in `run` mode** — NEVER fall back to the cached project-2 ids.
 
 ## Error handling (extends the 404 / re-resolve note above)
 

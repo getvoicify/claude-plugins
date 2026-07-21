@@ -2,7 +2,7 @@
 
 Drives GitHub epics one child at a time across the gangan repos, using native
 **sub-issues** for hierarchy, native **blocked-by relations** for dependencies, and
-**org Project #2 ("Gangan")** for live status. Replaces the per-repo
+**the configured org Project (default #2 "Gangan")** for live status. Replaces the per-repo
 `.claude/commands/epic.md` variants in gangan-mobile and gangan-api.
 
 ## Commands

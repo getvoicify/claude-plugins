@@ -32,7 +32,7 @@ The epic issue is NOT moved; `epic-config.repo` records where it lives.
    If NEITHER a parseable (non-slim) body NOR a backup comment is present, STOP with a
    diagnostic — do not proceed and risk destroying unrecoverable state.
 2. Parse the legacy `epic-config` YAML block strictly (pyyaml via sandbox runner).
-   Carry forward: `worktree_prefix`, `spec`, `runbook`, `custom_gates`. Map
+   Carry forward: `worktree_prefix`, `spec`, `runbook`, `custom_gates`, and optional `project`. Map
    `children_source`:
    - `task-list` → parse `- [ ] #NNN` / `- [x] #NNN` lines (the `#NNN` is the child;
      `[x]` = operator considered it done).
@@ -68,7 +68,7 @@ for the slim config (default: the repo the epic lives in).
      present — a crash between rewrite and backup would lose the legacy edges/ticks
      irrecoverably, so the order is non-negotiable.
    - ONLY THEN rewrite the body: replace the fat `epic-config` with the slim schema
-     (`epic`, `repo`, `docs_repo`, `worktree_prefix`, `spec`, `runbook`, `custom_gates`);
+     (`epic`, `repo`, `docs_repo`, `worktree_prefix`, `spec`, `runbook`, `custom_gates`, and optional `project`);
    - DELETE the task-list section and the `## Dependency model` section (their data
      now lives in sub-issues/relations — leaving them would create dual sources of
      truth);
