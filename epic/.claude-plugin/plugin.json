@@ -1,6 +1,6 @@
 {
   "name": "epic",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Unified GitHub epic driver: drive epics via sub-issues + org ProjectV2, brainstorm new epics into existence, migrate legacy task-list epics",
   "author": {
     "name": "Tom (verygreenboi)"
