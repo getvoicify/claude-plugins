@@ -5,7 +5,7 @@ argument-hint: "<epic#> [--repo owner/name]"
 
 You are migrating a legacy epic (task-list children in the issue body, old fat
 `epic-config`, `## Dependency model` prose) to the new model: native sub-issues,
-native blocked-by relations, org Project #2 tracking, slim `epic-config`. After
+native blocked-by relations, configured-project tracking (epic-config `project`, default #2), slim `epic-config`. After
 migration the `/epic` driver speaks ONLY the new model.
 
 Read `${CLAUDE_PLUGIN_ROOT}/references/github-graphql.md` first — all mutations, IDs,
@@ -58,7 +58,7 @@ for the slim config (default: the repo the epic lives in).
 1. For each child: `addSubIssue` to the epic (skip if already a sub-issue);
    `reprioritizeSubIssue` to match the legacy priority order.
 2. For each confirmed dependency edge: `addBlockedBy` (skip if already present).
-3. Add epic + all children to Project #2 (`addProjectV2ItemById` is idempotent);
+3. Add epic + all children to the configured project (epic-config `project`, default #2) (`addProjectV2ItemById` is idempotent);
    set Status per the confirmed table; Priority only if the operator assigned any.
 4. Rewrite the epic body via `gh issue edit --body-file`. HARD ORDERING REQUIREMENT —
    the backup MUST exist before any destructive edit:
