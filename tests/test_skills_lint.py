@@ -165,3 +165,29 @@ def test_otherwise_naming_fallback_is_guarded():
         "numbered questions in chat and wait for the reply."
     )
     assert find_capability_violations(text) == []
+
+
+# Task 3: neutral working-repo config path (design §Decisions, runbook §Task 3).
+#
+# Each SKILL.md that mentions `epic.yaml` must contain the canonical
+# lookup-order sentence naming `.agents/epic.yaml` primary and
+# `.claude/epic.yaml` fallback. Presence of the sentence only — error-message
+# literals and examples may name the primary path alone. SKILL.md scope only
+# (README excluded).
+
+CONFIG_LOOKUP_SENTENCE = "check `.agents/epic.yaml` first, then `.claude/epic.yaml`"
+
+
+@pytest.mark.parametrize("name", SKILL_NAMES)
+def test_config_lookup_order_sentence_present(name):
+    path = skill_md_path(name)
+    text = path.read_text(encoding="utf-8")
+    if "epic.yaml" not in text:
+        pytest.skip(f"{path} does not mention epic.yaml")
+    # The sentence hard-wraps in prose; normalize whitespace the same way
+    # find_capability_violations does before the substring match.
+    normalized = " ".join(text.lower().split())
+    assert CONFIG_LOOKUP_SENTENCE in normalized, (
+        f"{path} mentions epic.yaml but lacks the canonical lookup-order "
+        f"sentence: {CONFIG_LOOKUP_SENTENCE!r}"
+    )

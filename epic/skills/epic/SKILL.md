@@ -55,16 +55,16 @@ invocation loops the same per-child mechanics autonomously until the epic is don
    - `spec`, `runbook` — paths relative to `docs_repo` root.
    - `custom_gates` (list, optional, default `[]`) — epic-level UNION of all children's
      gate names across repos; resolved PER-CHILD-REPO against that child's
-     `.claude/epic.yaml` gate catalog (Layer 2). A name absent from the CURRENT child's
-     repo catalog but present in another involved repo's is SKIPPED for this child (not
-     fatal); a name unknown in EVERY involved repo's catalog → see "Missing or malformed
-     config".
+     `.agents/epic.yaml` (or `.claude/epic.yaml` fallback) gate catalog (Layer 2). A
+     name absent from the CURRENT child's repo catalog but present in another involved
+     repo's is SKIPPED for this child (not fatal); a name unknown in EVERY involved
+     repo's catalog → see "Missing or malformed config".
 3. NO `children_source` key and NO `## Dependency model` section are expected:
    children come from the sub-issue API; blockers from native `blockedBy` relations.
    If the body still has a task-list (`- [ ] #NNN`) → STOP: "legacy epic — run
    `/epic:migrate <epic#>` first."
 
-### Layer 2: per-repo `.claude/epic.yaml` (each child's repo checkout)
+### Layer 2: per-repo epic.yaml
 
 Carries what varies per repo: `toolchain` (commands + prefix + notes), `merge`
 (method, `required_checks`, approvals, `require_last_push_approval`,
@@ -73,8 +73,10 @@ requests a Copilot review at PR creation and gates merge on its threads), strict
 `docs` dirs, `worktrees`
 (root, `max_concurrent`), and the `gates` catalog (each: `hook` = `pre-review` |
 `pr-test-plan`, `required_when`, `procedure`). Load it from the checkout of whichever
-repo the CURRENT child lives in. Missing file → STOP: "repo <owner/name> has no
-`.claude/epic.yaml` — author it before driving children there."
+repo the CURRENT child lives in: check `.agents/epic.yaml` first, then
+`.claude/epic.yaml`. Neither `.agents/epic.yaml` nor `.claude/epic.yaml` exists →
+STOP: "repo <owner/name> has no epic.yaml — author `.agents/epic.yaml` before
+driving children there."
 
 Honor the target repo's `CLAUDE.md` and global CLAUDE.md throughout every drive (TDD,
 context-mode routing, the Claude Review action gate, GitHub Copilot review, etc. —
@@ -96,7 +98,7 @@ the operator to clone it; never drive via API-only edits.
   (`worktree_prefix` → kebab-slug of the epic title; `spec`/`runbook` → glob
   `<docs.spec_dir|runbook_dir>/*<slug>*.md` in `docs_repo`; a gate name unknown in EVERY
   involved repo's catalog → offer the catalog as multi-select + "drop it"; a truly novel
-  gate is NOT inventable — STOP: "add gate `<name>` to `<repo>/.claude/epic.yaml` first"
+  gate is NOT inventable — STOP: "add gate `<name>` to `<repo>/.agents/epic.yaml` first"
   (a name valid in another involved repo's catalog is SKIPPED for the current child,
   never an error)). Offer to persist the
   repaired block via `gh issue edit --body-file`; declined → use for this invocation

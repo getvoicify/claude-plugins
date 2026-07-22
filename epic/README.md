@@ -25,10 +25,10 @@ files are thin shims that read and follow the matching SKILL.md, so the familiar
 - **Two-layer config**:
   - Per-epic: a slim fenced `epic-config` YAML block in the epic issue body
     (`epic`, `repo`, `docs_repo`, `worktree_prefix`, `spec`, `runbook`, `custom_gates`).
-  - Per-repo: `.claude/epic.yaml` in each working repo — toolchain, verified
-    merge-gate facts (required checks, approvals, thread resolution), docs dirs,
-    worktree policy, and the custom-gate catalog. Adding a gate = a PR to that repo,
-    not a plugin release.
+  - Per-repo: `.agents/epic.yaml` in each working repo, with `.claude/epic.yaml` as
+    the fallback (checked second) — toolchain, verified merge-gate facts (required
+    checks, approvals, thread resolution), docs dirs, worktree policy, and the
+    custom-gate catalog. Adding a gate = a PR to that repo, not a plugin release.
 - **Status tracking**: the driver writes Project Status transitions
   (Todo → In Progress → In Review → Done, or Parked) at each lifecycle point. No
   body-checkbox editing — sub-issue closure updates `subIssuesSummary` automatically.
@@ -40,8 +40,8 @@ files are thin shims that read and follow the matching SKILL.md, so the familiar
 - `gh` CLI authenticated with scopes `repo, project, read:org`.
 - Local checkouts of the working repos as siblings (the driver resolves a child's
   checkout by matching `origin` URLs in the cwd's parent directory).
-- Each working repo carries `.claude/epic.yaml` (gangan-api, gangan-mobile,
-  gangan-angular-workspace: done 2026-06-10).
+- Each working repo carries `.agents/epic.yaml`, or the `.claude/epic.yaml` fallback
+  (gangan-api, gangan-mobile, gangan-angular-workspace: done 2026-06-10).
 
 ## Defaults
 
