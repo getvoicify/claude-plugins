@@ -423,8 +423,13 @@ def test_installing_has_subsection_per_agent(agent):
 
 
 def test_readme_states_gh_cli_scopes():
-    assert "repo, project, read:org" in read_epic_readme(), (
-        "epic/README.md must state the `gh` CLI scopes `repo, project, read:org`"
+    requirements = extract_h2_section(read_epic_readme(), "Requirements")
+    assert requirements is not None, (
+        "epic/README.md must have a `## Requirements` section"
+    )
+    assert "repo, project, read:org" in requirements, (
+        "epic/README.md `## Requirements` must state the `gh` CLI scopes "
+        "`repo, project, read:org` (a mention elsewhere does not count)"
     )
 
 
