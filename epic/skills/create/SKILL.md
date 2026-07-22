@@ -19,11 +19,14 @@ created on GitHub until the operator approves the full breakdown in phase 4.
 
 ## Phase 1 — Diverge (understand the problem)
 
-1. Restate the rough idea. Ask the operator (via `AskUserQuestion`, batched) about:
+1. Restate the rough idea. Ask the operator (batched via `AskUserQuestion` if your
+   harness supports structured questions; otherwise as numbered plain-text
+   questions, waiting for the reply) about:
    the user/business problem, success criteria, hard constraints, deadline pressure,
    and which repos are plausibly involved (gangan-api / gangan-mobile /
    gangan-angular-workspace — multi-select).
-2. Spawn read-only Explore subagents over each implicated repo to map the affected
+2. Spawn read-only Explore subagents (if supported; otherwise explore each repo
+   inline, sequentially) over each implicated repo to map the affected
    surface: existing modules, prior art, related specs under `docs/superpowers/`,
    open issues/PRs touching the same area (`gh search`).
 3. Surface 2–3 distinct solution approaches with trade-offs. Present them; let the
@@ -57,7 +60,8 @@ created on GitHub until the operator approves the full breakdown in phase 4.
 
 After the operator approves the drafts and BEFORE the phase-4 materialization gate,
 stress-test the spec + runbook with read-only adversarial reviewer subagents framed
-as devil's-advocate critics. Three lenses, dispatched in parallel each round:
+as devil's-advocate critics. Three lenses each round, dispatched in parallel if
+supported, otherwise run sequentially inline:
 
 - **Reality pin**: every load-bearing claim checked against the implicated repos'
   actual code — file paths, module names, API contracts, flag names, toolchain
