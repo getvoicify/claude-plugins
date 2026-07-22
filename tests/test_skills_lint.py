@@ -318,6 +318,33 @@ def test_codex_skills_path_escaping_epic_dir_is_rejected(tmp_path):
         check_codex_skills_field(manifest_path, epic_dir)
 
 
+# Task 5: release lockstep across both plugin manifests (design §Versioning /
+# release, runbook §Task 5).
+#
+# The release workflow's commit step must `git add` BOTH manifest paths.
+# Parsed from the actual `git add` invocation line(s) — not bare string
+# presence anywhere in the file, so a comment naming the Codex manifest
+# cannot vacuously pass.
+
+RELEASE_WORKFLOW_PATH = REPO_ROOT / ".github" / "workflows" / "release.yml"
+GIT_ADD_RE = re.compile(r"^[ \t]*git add[ \t]+(.+)$", re.MULTILINE)
+
+
+def test_release_workflow_git_add_stages_both_manifests():
+    text = RELEASE_WORKFLOW_PATH.read_text(encoding="utf-8")
+    invocations = GIT_ADD_RE.findall(text)
+    assert invocations, (
+        f"{RELEASE_WORKFLOW_PATH.relative_to(REPO_ROOT)}: no `git add` "
+        "invocation found in the release workflow"
+    )
+    staged = " ".join(invocations)
+    for manifest in (".claude-plugin/plugin.json", ".codex-plugin/plugin.json"):
+        assert manifest in staged, (
+            f"{RELEASE_WORKFLOW_PATH.relative_to(REPO_ROOT)}: the `git add` "
+            f"invocation(s) must stage {manifest}; found: {invocations}"
+        )
+
+
 def test_codex_catalog_name_is_tom_plugins():
     catalog = load_json(CODEX_CATALOG_PATH)
     assert catalog.get("name") == "tom-plugins", (

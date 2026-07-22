@@ -18,15 +18,25 @@ def _plugin_json(repo_root, source):
     return Path(repo_root) / source / ".claude-plugin" / "plugin.json"
 
 
+def _codex_plugin_json(repo_root, source):
+    return Path(repo_root) / source / ".codex-plugin" / "plugin.json"
+
+
 def read_version(repo_root, source):
     return json.loads(_plugin_json(repo_root, source).read_text())["version"]
 
 
-def write_version(repo_root, source, new_version):
-    path = _plugin_json(repo_root, source)
+def _patch_version(path, new_version):
     data = json.loads(path.read_text())
     data["version"] = new_version
     path.write_text(json.dumps(data, indent=2) + "\n")
+
+
+def write_version(repo_root, source, new_version):
+    _patch_version(_plugin_json(repo_root, source), new_version)
+    codex_path = _codex_plugin_json(repo_root, source)
+    if codex_path.is_file():
+        _patch_version(codex_path, new_version)
 
 
 def _git(*args):
