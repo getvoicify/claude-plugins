@@ -51,7 +51,9 @@ The epic issue is NOT moved; `epic-config.repo` records where it lives.
 ### 2. Confirm with the operator (the only gate)
 
 Present one table: child · title · inferred Status · inferred blockers · tick state ·
-PR (state). Ask via `AskUserQuestion`: approve as-is, or correct specific rows
+PR (state). Ask (via `AskUserQuestion` if your harness supports structured
+questions; otherwise as numbered plain-text questions, waiting for the reply):
+approve as-is, or correct specific rows
 (blockers and Status are the error-prone inferences). Also confirm the `docs_repo`
 for the slim config (default: the repo the epic lives in).
 

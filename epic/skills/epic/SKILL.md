@@ -90,7 +90,9 @@ the operator to clone it; never drive via API-only edits.
 ### Missing or malformed config
 
 - **Interactive modes** (`status`/`next`/`<child#>`): repair interactively — identify
-  the precise gap; `AskUserQuestion` per missing field with defaults
+  the precise gap; ask per missing field (via `AskUserQuestion` if your harness
+  supports structured questions; otherwise as numbered plain-text questions, waiting
+  for the reply) with defaults
   (`worktree_prefix` → kebab-slug of the epic title; `spec`/`runbook` → glob
   `<docs.spec_dir|runbook_dir>/*<slug>*.md` in `docs_repo`; a gate name unknown in EVERY
   involved repo's catalog → offer the catalog as multi-select + "drop it"; a truly novel
@@ -99,7 +101,7 @@ the operator to clone it; never drive via API-only edits.
   never an error)). Offer to persist the
   repaired block via `gh issue edit --body-file`; declined → use for this invocation
   only.
-- **`run` mode**: no `AskUserQuestion` ever. Hard-stop: "`run` aborted: epic #<n>
+- **`run` mode**: no interactive questions of any kind. Hard-stop: "`run` aborted: epic #<n>
   config missing/incomplete (`<field>`). Run `/epic <n> status` once interactively,
   then re-invoke."
 
@@ -178,7 +180,7 @@ Report only — no driving, and **read-only by default** (mutates NOTHING unless
   Done (→ In Progress, or Parked if it then parks).
 - Announce the chosen child + one-line reason. Set Project Status = **In Progress**.
 
-### 2. Drive (subagent-driven development; per-repo recipe from epic.yaml + runbook)
+### 2. Drive (delegated implementation; per-repo recipe from epic.yaml + runbook)
 
 Apply the child repo's `toolchain.prefix` to every build/test command. STOP if a
 required prefix resolves empty (e.g. JAVA_HOME on gangan-mobile).
@@ -187,8 +189,10 @@ required prefix resolves empty (e.g. JAVA_HOME on gangan-mobile).
 2. **Context**: `gh issue view` the child; read `spec` + `runbook` from the
    `docs_repo` checkout. Do NOT skim sibling children.
 3. **Step-1 pin (adversarial, iterative)**: dispatch a read-only adversarial
-   reviewer subagent to attack the child's spec/runbook slice against current
-   reality — verify every load-bearing claim against the relevant sources (other
+   reviewer subagent if your harness supports subagents (otherwise perform the
+   review yourself inline, as a separate sequential pass) to attack the child's
+   spec/runbook slice against current reality — verify every load-bearing claim
+   against the relevant sources (other
    repos' code for API contracts, `origin/main` for drift since the docs merged;
    never curl — use the sandbox runner or `gh`). Where it finds defects, amend the
    plan via the pin (merged docs are not edited), then RE-RUN the reviewer on the
@@ -198,13 +202,16 @@ required prefix resolves empty (e.g. JAVA_HOME on gangan-mobile).
    (default 3); exhausted with blocking findings still open → interactive: STOP and
    hand off; `run`: park. Post the final pin — verified claims, every amendment,
    AND any residual findings — as a child-issue comment before any code.
-4. **Implementer subagent**: TDD per runbook — failing tests first, implement, full
+4. **Implementer subagent** (if supported; otherwise implement inline yourself,
+   sequentially): TDD per runbook — failing tests first, implement, full
    suite green (toolchain commands from epic.yaml), commit.
 5. **`pre-review` gates**: run each `custom_gates` entry whose hook is `pre-review`
    and whose `required_when` matches this child. Failure → interactive: STOP and hand
    off; `run`: park.
-6. **Pre-PR adversarial reviews**: run two read-only subagents framed as
-   devil's-advocate critics — a spec-compliance reviewer (does the diff FULLY
+6. **Pre-PR adversarial reviews**: run two read-only reviews framed as
+   devil's-advocate critiques — as parallel subagents if supported, otherwise
+   performed inline, sequentially (the reviews still happen, in-session) — a
+   spec-compliance reviewer (does the diff FULLY
    satisfy the child's spec/runbook, no gaps?) and a quality reviewer (logic bugs,
    security, missing tests, repo-convention violations). Implementer fixes; re-run BOTH
    reviewers on the amended diff until a single round returns zero BLOCKING findings
@@ -212,7 +219,8 @@ required prefix resolves empty (e.g. JAVA_HOME on gangan-mobile).
    PR body, not loop fuel) — one round is often not enough (a fix can introduce new
    defects). Budget
    `PRE_PR_REVIEW_ROUNDS` (default 3); exhausted with blocking findings open → interactive:
-   STOP and hand off; `run`: park. Trust-but-verify every subagent summary. The
+   STOP and hand off; `run`: park. When work is delegated, trust-but-verify every
+   subagent summary. The
    local CodeRabbit CLI pass is RETIRED here — the **Claude Review action** is now
    the primary post-PR review gate (fires automatically on PR open, step 7; gated
    in the merge phase, step 3). CodeRabbit's bot review and Copilot are likewise
@@ -267,7 +275,8 @@ green with findings still open).
 2. **Arm `gh pr merge <pr> --auto --<merge.method>`** — now that every prose gate is
    confirmed satisfied — then run the CI fix-loop (CI fix-rounds MAY happen after
    arming; prose-gate resolution must NOT):
-   - required check failing → diagnose from the run, dispatch implementer, push.
+   - required check failing → diagnose from the run, dispatch the implementer if
+     your harness supports subagents (otherwise make the fix inline), push.
      Budget `CI_FIX_ROUNDS`.
    - behind strict `main` / conflict → rebase + resolve. Budget `CONFLICT_ATTEMPTS`.
      Conflicts are never terminal until the budget is exhausted.
@@ -288,7 +297,8 @@ STOPPED PR armed to auto-merge unresolved findings.
 Same per-child mechanics in a self-scheduling loop. One child in flight at a time
 (strict up-to-date checks make concurrent PRs invalidate each other).
 
-**Unattended invariants:** no `AskUserQuestion` (on an architectural fork: pick the
+**Unattended invariants:** no interactive questions of any kind (on an
+architectural fork: pick the
 most conservative defensible default — smallest blast radius, reversible, matches
 existing repo patterns (e.g. extend an existing module over introducing a new service) —
 record decision + rationale in PR body and a child comment; park only if no defensible
@@ -309,7 +319,9 @@ FAILED/park comment. Tunables (do not exceed): `CI_ESTIMATE=420s`,
 **Per-cycle:** recover & select (no eligible, unparked child left → if the epic is complete (all children CLOSED, none parked-open) apply the epic-completion rule (close epic if open + epic Status=Done); then final report, TERMINATE) → resume check (open PR from a prior cycle → verify worktree/branch
 integrity, then jump to fix-loop; closed-unmerged PR with worktree present →
 closed-unmerged PR recovery) → preflight HARD checks → drive to PR → merge phase → on
-MERGED: Status=Done + sweep → reschedule next cycle (`ScheduleWakeup`). On resume into a
+MERGED: Status=Done + sweep → reschedule next cycle (via `ScheduleWakeup` if your
+harness supports scheduled wakeups; otherwise keep an in-session loop, sleeping
+between polls). On resume into a
 fix-loop: fetch the PR head SHA and confirm the local branch is fast-forwardable with a
 clean working tree before touching it; on divergence, rebase/reconcile within
 `CONFLICT_ATTEMPTS` or park with a diagnostic — NEVER force-overwrite. Sleep only for
@@ -320,8 +332,10 @@ stuck wait; never idle-burn. A CI check or review verdict that never arrives wit
 that never posted) rather than rescheduling forever.
 
 **Circuit breakers:**
-- Per-issue budget exhausted / gate unfixable / subagent BLOCKED with no defensible
-  path / `MAX_WAIT_CYCLES` exceeded → **park**: if `--auto` is armed, FIRST run
+- Per-issue budget exhausted / gate unfixable / a subagent BLOCKED with no
+  defensible path (if your harness runs steps via subagents — otherwise an inline
+  step stalled the same way) / `MAX_WAIT_CYCLES` exceeded → **park**: if `--auto`
+  is armed, FIRST run
   `gh pr merge <pr> --disable-auto`; comment `FAILED: <precise reason + evidence URLs>`
   on the child (the durable parked-marker; note the disarm), set Status = **Parked**,
   leave worktree + PR intact, continue with the next unblocked child. Children blocked
@@ -340,8 +354,9 @@ that never posted) rather than rescheduling forever.
 ## Failure handling
 
 - Blocked child requested explicitly → name the unmet blockers, STOP.
-- Subagent BLOCKED/NEEDS_CONTEXT → more context / stronger model / split / escalate;
-  never silently retry.
+- Subagent BLOCKED/NEEDS_CONTEXT (if your harness runs steps via subagents;
+  otherwise treat an inline step's BLOCKED/NEEDS_CONTEXT failure the same way) →
+  more context / stronger model / split / escalate; never silently retry.
 - Repo-specific caveats (emulator/simulator wedges, screenshot determinism, Paystack
   rate limits, migration safety) → `toolchain.notes` + `gates` in that repo's
   epic.yaml.
