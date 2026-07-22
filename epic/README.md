@@ -50,6 +50,32 @@ out). One child in flight at a time. Worktrees live under `.worktrees/` and are
 swept only after their PR merges. Tunable budget constants are documented in the
 driver command.
 
+## Installing
+
+### Codex CLI
+
+Register this repo's plugin catalog — this adds the `tom-plugins` marketplace
+from the repo's `.agents/plugins/marketplace.json`:
+
+```sh
+codex plugin marketplace add getvoicify/claude-plugins
+```
+
+Then install the `epic` plugin non-interactively (available since codex-cli
+0.145.0):
+
+```sh
+codex plugin add epic@tom-plugins
+```
+
+The CLI's interactive `/plugins` browser and the ChatGPT desktop app remain
+alternatives to the non-interactive install.
+
+Pickup: start a new session after install (CLI) / restart the desktop app for
+repo-catalog pickup.
+
+Verified with codex-cli 0.145.0 (2026-07-22): marketplace resolved via `.agents/plugins/marketplace.json`, plugin installed to `~/.codex/plugins/cache/tom-plugins/epic/<version>`, and `epic:create` / `epic:epic` / `epic:migrate` all listed as available skills.
+
 ## Releasing
 
 Versioning is automated. On every push to `main`, the `release` workflow reads each
