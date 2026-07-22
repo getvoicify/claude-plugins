@@ -99,7 +99,8 @@ Invocation: `/epic:create <rough idea>`, `/epic <epic#> status`,
 `/epic:migrate <epic#>`.
 
 Headless note: `claude -p` cannot read the plugin's SKILL.md outside the cwd
-without `--add-dir <plugin-or-checkout-path>`; the `status` leg additionally
+without `--add-dir` pointing at your clone of this repo (or the installed
+plugin's cache dir shown by `claude plugin list`); the `status` leg additionally
 needs workspace trust + a read-only `gh` allowlist in the project's settings —
 without these the turn budget burns silently.
 
@@ -122,7 +123,7 @@ codex plugin add epic@tom-plugins
 If the marketplace was added previously, refresh it first:
 
 ```sh
-codex plugin marketplace upgrade
+codex plugin marketplace upgrade tom-plugins
 ```
 
 Reason: a previously-added marketplace serves a stale cached snapshot
@@ -143,7 +144,9 @@ skill `description`.
 
 Network note: the driver's `status` and `migrate` need GitHub API access, and
 the default `codex exec` sandbox blocks api.github.com — run those legs with
-`-s danger-full-access` (or an operator-approved network-enabled profile).
+an operator-approved network-enabled profile (`workspace-write` +
+`network_access=true`); `-s danger-full-access` also works but disables
+filesystem sandboxing entirely, not just the network block.
 
 ### Kimi Code
 
@@ -230,11 +233,12 @@ Cursor CLI, OpenCode:
       mutations yet)" (per `skills/migrate/SKILL.md`) — abort before any
       writes.
 
-Claude Code leg, headless (`claude -p`): pass
-`--add-dir <plugin-or-checkout-path>` or the plugin's SKILL.md outside the cwd
-is unreadable; the `status` leg also needs workspace trust + a read-only `gh`
-allowlist in the scratch project's settings — without these the turn budget
-burns silently.
+Claude Code leg, headless (`claude -p`): pass `--add-dir` pointing at your
+clone of this repo (or the installed plugin's cache dir shown by
+`claude plugin list`) or the plugin's SKILL.md outside the cwd is unreadable;
+the `status` leg also needs workspace trust + a read-only `gh` allowlist in
+the scratch project's settings — without these the turn budget burns
+silently.
 
 **Config-fixture legs** — a self-contained dry-run of the driver's Layer-2
 lookup order. The driver loads per-repo config from the checkout of the repo
