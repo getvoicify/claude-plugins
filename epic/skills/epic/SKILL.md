@@ -134,7 +134,10 @@ sub-issue's `state == CLOSED` (iterate `subIssues.nodes[].state` — do NOT use
 
 1. **Drift self-heal**: epic issue CLOSED **and** complete, but its Project Status ≠
    Done → set it to Done immediately — in every mode EXCEPT plain `status` without
-   `--sweep`, which only REPORTS the drift (read-only contract). Epic CLOSED while any
+   `--sweep`, which only REPORTS the drift (read-only contract). Per the lifecycle
+   table, `status --sweep` repairs the epic's own item ONLY in this CLOSED+complete
+   drift case; an OPEN epic's own Status is driver-owned and NOT a sweep target.
+   Epic CLOSED while any
    child is still OPEN → anomaly (likely human-closed early): REPORT it, never stamp
    Done, never auto-reopen.
 2. **Completion**: in `next` / `<child#>` / `run`, when the epic is observed complete (typically because the

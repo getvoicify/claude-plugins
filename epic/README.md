@@ -98,6 +98,12 @@ Skills are auto-discovered from the plugin's `skills/` dir; the familiar
 Invocation: `/epic:create <rough idea>`, `/epic <epic#> status`,
 `/epic:migrate <epic#>`.
 
+Headless note: `claude -p` cannot read the plugin's SKILL.md outside the cwd
+without `--add-dir` pointing at your clone of this repo (or the installed
+plugin's cache dir shown by `claude plugin list`); the `status` leg additionally
+needs workspace trust + a read-only `gh` allowlist in the project's settings —
+without these the turn budget burns silently.
+
 ### Codex CLI
 
 Register this repo's plugin catalog — this adds the `tom-plugins` marketplace
@@ -114,6 +120,15 @@ Then install the `epic` plugin non-interactively (available since codex-cli
 codex plugin add epic@tom-plugins
 ```
 
+If the marketplace was added previously, refresh it first:
+
+```sh
+codex plugin marketplace upgrade tom-plugins
+```
+
+Reason: a previously-added marketplace serves a stale cached snapshot
+(observed: 0.7.0 served when main was 0.9.0, until upgrade).
+
 The CLI's interactive `/plugins` browser and the ChatGPT desktop app remain
 alternatives to the non-interactive install.
 
@@ -126,6 +141,12 @@ Invocation: explicit — run `/skills` or type `$` to mention a skill in your
 prompt (e.g. `$epic:create a rate-limiter epic`, `$epic:epic 9 status`);
 implicit — Codex can choose a skill on its own when your task matches the
 skill `description`.
+
+Network note: the driver's `status` and `migrate` need GitHub API access, and
+the default `codex exec` sandbox blocks api.github.com — run those legs with
+an operator-approved network-enabled profile (`workspace-write` +
+`network_access=true`); `-s danger-full-access` also works but disables
+filesystem sandboxing entirely, not just the network block.
 
 ### Kimi Code
 
@@ -181,12 +202,24 @@ your prompt: ask `Use the epic skill: status for epic #9`,
 The manual verification script for a release across all five agents.
 (Executing it is a separate task — this section is the script.)
 
+Last smoke: 2026-07-22, verified with claude 2.1.217, codex-cli 0.145.0,
+kimi 0.29.0. OpenCode and Cursor CLI legs pending (auth/install — see
+issue #16). The gangan-default-epic-home probe order (skills try
+getvoicify/gangan then the cwd repo) is by design.
+
 **Preconditions**
 
 - [ ] All five CLIs (Claude Code, Codex CLI, Kimi Code, Cursor CLI, OpenCode)
       installed **and** authenticated.
 - [ ] `gh` CLI authenticated with scopes `repo, project, read:org`
       (`gh auth status` shows them).
+- [ ] A `python3` runtime is permitted (with `pyyaml` installable) —
+      REQUIRED: the skills' strict config-parse steps mandate python +
+      pyyaml, never regex-only extraction (see `skills/epic/SKILL.md`).
+      If the harness does not permit `python3`, STOP and grant it before
+      driving. (The config-fixture legs' Layer-2 lookup dry-runs, which
+      only locate and read the file, tolerated its absence — an
+      observation scoped to those legs, not the skills generally.)
 - [ ] A real epic to run `status` against — this epic is
       [getvoicify/claude-plugins#9](https://github.com/getvoicify/claude-plugins/issues/9).
 
@@ -203,6 +236,13 @@ Cursor CLI, OpenCode:
 - [ ] Invoke `migrate` and stop after its step 1, "Read & parse (no
       mutations yet)" (per `skills/migrate/SKILL.md`) — abort before any
       writes.
+
+Claude Code leg, headless (`claude -p`): pass `--add-dir` pointing at your
+clone of this repo (or the installed plugin's cache dir shown by
+`claude plugin list`) or the plugin's SKILL.md outside the cwd is unreadable;
+the `status` leg also needs workspace trust + a read-only `gh` allowlist in
+the scratch project's settings — without these the turn budget burns
+silently.
 
 **Config-fixture legs** — a self-contained dry-run of the driver's Layer-2
 lookup order. The driver loads per-repo config from the checkout of the repo
