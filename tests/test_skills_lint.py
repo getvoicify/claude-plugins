@@ -93,6 +93,9 @@ CAPABILITY_TOKEN_RE = re.compile(
     re.IGNORECASE,
 )
 GUARD_MARKERS = ("if your harness", "if supported")
+# Whole word `otherwise` followed (after optional punctuation/space) by at
+# least one word character — the clause must NAME its fallback.
+OTHERWISE_CLAUSE_RE = re.compile(r"\botherwise\b\W*\w")
 
 
 def split_paragraphs(text):
@@ -112,22 +115,53 @@ def test_claude_plugin_root_banned_under_skills():
     )
 
 
-@pytest.mark.parametrize("name", SKILL_NAMES)
-def test_capability_tokens_only_in_guarded_paragraphs(name):
-    path = skill_md_path(name)
+def find_capability_violations(text):
     violations = []
-    for para in split_paragraphs(path.read_text(encoding="utf-8")):
+    for para in split_paragraphs(text):
         # Hard-wrapped markdown may break a marker phrase across lines;
         # normalize intra-paragraph whitespace before matching.
         normalized = " ".join(para.lower().split())
         hits = CAPABILITY_TOKEN_RE.findall(normalized)
         if not hits:
             continue
-        guarded = any(marker in normalized for marker in GUARD_MARKERS) and "otherwise" in normalized
+        guarded = any(marker in normalized for marker in GUARD_MARKERS) and OTHERWISE_CLAUSE_RE.search(normalized)
         if not guarded:
             first_line = para.strip().splitlines()[0]
             violations.append(f"{sorted({h.lower() for h in hits})} in paragraph starting: {first_line!r}")
+    return violations
+
+
+@pytest.mark.parametrize("name", SKILL_NAMES)
+def test_capability_tokens_only_in_guarded_paragraphs(name):
+    path = skill_md_path(name)
+    violations = find_capability_violations(path.read_text(encoding="utf-8"))
     assert not violations, (
         f"{path}: capability tokens outside guarded paragraphs (need "
-        f"'if your harness' or 'if supported' AND 'otherwise'):\n" + "\n".join(violations)
+        f"'if your harness' or 'if supported' AND an 'otherwise' clause naming "
+        f"the fallback):\n" + "\n".join(violations)
     )
+
+
+def test_bare_trailing_otherwise_is_flagged_unguarded():
+    # An `otherwise` clause must NAME the fallback; a paragraph that ends in a
+    # bare "otherwise:" with no fallback content is not a guard.
+    text = "If your harness supports subagents, dispatch one; otherwise:"
+    assert find_capability_violations(text), (
+        "a bare trailing 'otherwise:' names no fallback and must be flagged"
+    )
+
+
+def test_otherwise_embedded_in_larger_word_is_flagged_unguarded():
+    # "otherwise" must match on word boundaries, not as a substring.
+    text = "If your harness supports subagents, spawn one and proceed otherwisely."
+    assert find_capability_violations(text), (
+        "'otherwise' inside a larger word is not an otherwise clause"
+    )
+
+
+def test_otherwise_naming_fallback_is_guarded():
+    text = (
+        "If your harness supports subagents, dispatch one; otherwise, ask "
+        "numbered questions in chat and wait for the reply."
+    )
+    assert find_capability_violations(text) == []
