@@ -7,11 +7,16 @@ Drives GitHub epics one child at a time across the gangan repos, using native
 
 ## Commands
 
-| Command | Purpose |
-|---|---|
-| `/epic <epic#> [status\|next\|run\|<child#>] [--stop-at-pr]` | Drive an epic. `next`/`<child#>` take one child through merge + sweep (or stop at PR with `--stop-at-pr`); `run` loops autonomously to completion. |
-| `/epic:create [rough idea]` | Brainstorm session → spec + runbook (docs PR) → epic + sub-issues + dependencies + Project items. Nothing touches GitHub until you approve the breakdown. |
-| `/epic:migrate <epic#> [--repo owner/name]` | Convert a legacy task-list epic (e.g. gangan-api #278–#282) to the new model. |
+The canonical source for each workflow is an [Agent Skills](https://agentskills.io)
+tree: `skills/{epic,create,migrate}/SKILL.md`. The Claude Code `commands/*.md`
+files are thin shims that read and follow the matching SKILL.md, so the familiar
+`/epic:<name>` invocations keep working unchanged.
+
+| Command (Claude Code) | Canonical skill | Purpose |
+|---|---|---|
+| `/epic <epic#> [status\|next\|run\|<child#>] [--stop-at-pr]` | `skills/epic/SKILL.md` | Drive an epic. `next`/`<child#>` take one child through merge + sweep (or stop at PR with `--stop-at-pr`); `run` loops autonomously to completion. |
+| `/epic:create [rough idea]` | `skills/create/SKILL.md` | Brainstorm session → spec + runbook (docs PR) → epic + sub-issues + dependencies + Project items. Nothing touches GitHub until you approve the breakdown. |
+| `/epic:migrate <epic#> [--repo owner/name]` | `skills/migrate/SKILL.md` | Convert a legacy task-list epic (e.g. gangan-api #278–#282) to the new model. |
 
 ## Architecture
 
@@ -27,7 +32,7 @@ Drives GitHub epics one child at a time across the gangan repos, using native
 - **Status tracking**: the driver writes Project Status transitions
   (Todo → In Progress → In Review → Done, or Parked) at each lifecycle point. No
   body-checkbox editing — sub-issue closure updates `subIssuesSummary` automatically.
-- **Reference**: `references/github-graphql.md` holds every GraphQL incantation,
+- **Reference**: `skills/epic/references/github-graphql.md` holds every GraphQL incantation,
   verified project/field IDs, the PR-mapping rule, and API gotchas.
 
 ## Requirements
