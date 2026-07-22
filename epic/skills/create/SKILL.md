@@ -40,15 +40,17 @@ created on GitHub until the operator approves the full breakdown in phase 4.
    contract-first ordering (e.g. API child blocks mobile/web children consuming it).
 3. Draw the dependency graph (these become native blocked-by relations — keep it a
    DAG, prefer shallow). Assign Priority (P0 = blocks the epic, P1 = core, P2 = nice).
-4. For each child, check the target repo's `.claude/epic.yaml` gate catalog: tag the
+4. For each child, check the target repo's `.agents/epic.yaml` gate catalog (to read
+   the config, check `.agents/epic.yaml` first, then `.claude/epic.yaml`): tag the
    `custom_gates` whose `required_when` will match (e.g. migrations →
    `db-migration-safety`; iOS-touching → `ios-simulator-smoke`; UI → `axe-a11y-audit`).
 
 ## Phase 3 — Draft (spec + runbook)
 
 1. Pick the `docs_repo` = the working repo where most children land (ask if unclear).
-2. Write two files into a branch of the `docs_repo` checkout, following its
-   `.claude/epic.yaml` `docs` dirs and existing naming convention
+2. Write two files into a branch of the `docs_repo` checkout, following the
+   `docs` dirs from its effective epic.yaml config (primary `.agents/epic.yaml`,
+   fallback `.claude/epic.yaml`) and existing naming convention
    (`YYYY-MM-DD-<slug>-{design,plan}.md` style — mirror neighbors):
    - **Spec** (`docs.spec_dir`): problem, chosen approach + rejected alternatives,
      architecture/contract decisions, success criteria, out-of-scope list.
