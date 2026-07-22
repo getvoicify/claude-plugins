@@ -1,6 +1,7 @@
 # Task 1: skills tree structure lint.
 # Tasks 2-6 append further sections below under their own "# Task N" comments.
 
+import json
 import pathlib
 import re
 
@@ -190,4 +191,103 @@ def test_config_lookup_order_sentence_present(name):
     assert CONFIG_LOOKUP_SENTENCE in normalized, (
         f"{path} mentions epic.yaml but lacks the canonical lookup-order "
         f"sentence: {CONFIG_LOOKUP_SENTENCE!r}"
+    )
+
+
+# Task 4: Codex plugin manifest + repo catalog (design §Per-agent packaging,
+# runbook §Task 4; schema pinned from live Codex docs — issue #13 step-1 pin,
+# fetched 2026-07-22).
+#
+# - `epic/.codex-plugin/plugin.json`: name "epic", version in lockstep with
+#   the Claude manifest (read dynamically — never hardcoded), non-empty
+#   description, and a `skills` field that must be PRESENT (omission would
+#   be a vacuous pass), `./`-prefixed, and resolve (relative to `epic/`) to
+#   a directory containing all three skill dirs.
+# - Root `.agents/plugins/marketplace.json`: Codex repo catalog, top-level
+#   name "tom-plugins", at least one plugins[] entry with
+#   source.source == "local" and a `./`-prefixed path resolving to `epic/`.
+
+EPIC_DIR = REPO_ROOT / "epic"
+CLAUDE_MANIFEST_PATH = EPIC_DIR / ".claude-plugin" / "plugin.json"
+CODEX_MANIFEST_PATH = EPIC_DIR / ".codex-plugin" / "plugin.json"
+CODEX_CATALOG_PATH = REPO_ROOT / ".agents" / "plugins" / "marketplace.json"
+
+
+def load_json(path):
+    assert path.is_file(), f"missing {path.relative_to(REPO_ROOT)}"
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise AssertionError(f"{path.relative_to(REPO_ROOT)}: invalid JSON: {exc}")
+
+
+def test_codex_manifest_name_is_epic():
+    manifest = load_json(CODEX_MANIFEST_PATH)
+    assert manifest.get("name") == "epic", (
+        "epic/.codex-plugin/plugin.json `name` must be 'epic'"
+    )
+
+
+def test_codex_manifest_version_lockstep_with_claude_manifest():
+    codex_version = load_json(CODEX_MANIFEST_PATH).get("version")
+    claude_version = load_json(CLAUDE_MANIFEST_PATH).get("version")
+    assert codex_version == claude_version, (
+        f"epic/.codex-plugin/plugin.json version ({codex_version!r}) must equal "
+        f"epic/.claude-plugin/plugin.json version ({claude_version!r})"
+    )
+
+
+def test_codex_manifest_description_non_empty():
+    description = load_json(CODEX_MANIFEST_PATH).get("description")
+    assert isinstance(description, str) and description.strip(), (
+        "epic/.codex-plugin/plugin.json `description` must be a non-empty string"
+    )
+
+
+def test_codex_manifest_skills_field_present_and_resolves():
+    skills = load_json(CODEX_MANIFEST_PATH).get("skills")
+    # PRESENT and a string — an omitted `skills` field must fail, not
+    # vacuously pass (issue #13 pin, blocking defect 2).
+    assert isinstance(skills, str), (
+        "epic/.codex-plugin/plugin.json must declare a `skills` field (string path)"
+    )
+    assert skills.startswith("./"), (
+        f"`skills` path must be `./`-prefixed, got {skills!r}"
+    )
+    skills_dir = (EPIC_DIR / skills).resolve()
+    assert skills_dir.is_dir(), (
+        f"`skills` path {skills!r} does not resolve to a directory under epic/"
+    )
+    for name in SKILL_NAMES:
+        assert (skills_dir / name).is_dir(), (
+            f"`skills` dir {skills!r} is missing the `{name}` skill dir"
+        )
+
+
+def test_codex_catalog_name_is_tom_plugins():
+    catalog = load_json(CODEX_CATALOG_PATH)
+    assert catalog.get("name") == "tom-plugins", (
+        ".agents/plugins/marketplace.json top-level `name` must be 'tom-plugins'"
+    )
+
+
+def test_codex_catalog_has_local_epic_entry():
+    catalog = load_json(CODEX_CATALOG_PATH)
+    plugins = catalog.get("plugins")
+    assert isinstance(plugins, list) and plugins, (
+        ".agents/plugins/marketplace.json must declare a non-empty `plugins` list"
+    )
+    matches = []
+    for entry in plugins:
+        source = entry.get("source") or {}
+        if source.get("source") != "local":
+            continue
+        path = source.get("path")
+        if not (isinstance(path, str) and path.startswith("./")):
+            continue
+        if (REPO_ROOT / path).resolve() == EPIC_DIR.resolve():
+            matches.append(entry)
+    assert matches, (
+        ".agents/plugins/marketplace.json needs at least one plugins[] entry "
+        "with source.source == 'local' and a `./`-prefixed path resolving to epic/"
     )

@@ -1,0 +1,20 @@
+{
+  "name": "tom-plugins",
+  "interface": {
+    "displayName": "Tom's Plugins"
+  },
+  "plugins": [
+    {
+      "name": "epic",
+      "description": "Unified GitHub epic driver: drive epics via sub-issues + org ProjectV2, brainstorm new epics into existence, migrate legacy task-list epics",
+      "source": {
+        "source": "local",
+        "path": "./epic"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      }
+    }
+  ]
+}

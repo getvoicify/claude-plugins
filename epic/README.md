@@ -50,6 +50,25 @@ out). One child in flight at a time. Worktrees live under `.worktrees/` and are
 swept only after their PR merges. Tunable budget constants are documented in the
 driver command.
 
+## Installing
+
+### Codex CLI
+
+Register this repo's plugin catalog (`.agents/plugins/marketplace.json`):
+
+```sh
+codex plugin marketplace add getvoicify/claude-plugins
+```
+
+That command only registers the catalog — there is no non-interactive install
+command. Install the `epic` plugin through the CLI's interactive `/plugins`
+browser, or through the ChatGPT desktop app.
+
+Pickup: start a new session after install (CLI) / restart the desktop app for
+repo-catalog pickup.
+
+Install smoke pending on this machine — commands per developers.openai.com/codex docs (fetched 2026-07-22); to be verified when the parked smoke runs.
+
 ## Releasing
 
 Versioning is automated. On every push to `main`, the `release` workflow reads each
