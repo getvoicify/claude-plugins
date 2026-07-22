@@ -372,3 +372,63 @@ def test_codex_catalog_has_local_epic_entry():
         ".agents/plugins/marketplace.json needs at least one plugins[] entry "
         "with source.source == 'local' and a `./`-prefixed path resolving to epic/"
     )
+
+
+# Task 6: per-agent install docs + smoke checklist (design §Per-agent
+# packaging & install, runbook §Task 6; Kimi + Cursor cells pinned from live
+# docs — issue #15 step-1 pin, fetched 2026-07-22).
+#
+# - `epic/README.md` `## Installing` must carry a `###` subsection per agent:
+#   Claude Code, Codex CLI, Kimi Code, Cursor CLI, OpenCode.
+# - Content guard: the `gh` CLI scopes string `repo, project, read:org` must
+#   appear somewhere in the README.
+# - A top-level `## Smoke checklist` section must exist (executing it is
+#   Task 7's job — this lint asserts the document only).
+
+EPIC_README_PATH = EPIC_DIR / "README.md"
+
+INSTALL_AGENT_HEADINGS = [
+    "Claude Code",
+    "Codex CLI",
+    "Kimi Code",
+    "Cursor CLI",
+    "OpenCode",
+]
+
+
+def read_epic_readme():
+    assert EPIC_README_PATH.is_file(), "missing epic/README.md"
+    return EPIC_README_PATH.read_text(encoding="utf-8")
+
+
+def extract_h2_section(text, heading):
+    """Body of the `## <heading>` section, up to the next `## ` or EOF."""
+    match = re.search(
+        rf"^## {re.escape(heading)}[ \t]*$(.*?)(?=^## |\Z)",
+        text,
+        re.MULTILINE | re.DOTALL,
+    )
+    return match.group(1) if match else None
+
+
+@pytest.mark.parametrize("agent", INSTALL_AGENT_HEADINGS)
+def test_installing_has_subsection_per_agent(agent):
+    installing = extract_h2_section(read_epic_readme(), "Installing")
+    assert installing is not None, (
+        "epic/README.md must have a `## Installing` section"
+    )
+    assert re.search(rf"^### {re.escape(agent)}[ \t]*$", installing, re.MULTILINE), (
+        f"epic/README.md `## Installing` must contain a `### {agent}` subsection"
+    )
+
+
+def test_readme_states_gh_cli_scopes():
+    assert "repo, project, read:org" in read_epic_readme(), (
+        "epic/README.md must state the `gh` CLI scopes `repo, project, read:org`"
+    )
+
+
+def test_readme_has_smoke_checklist_section():
+    assert re.search(r"^## Smoke checklist[ \t]*$", read_epic_readme(), re.MULTILINE), (
+        "epic/README.md must have a `## Smoke checklist` section"
+    )
