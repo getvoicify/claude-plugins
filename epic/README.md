@@ -63,6 +63,7 @@ your project's `.agents/skills/`:
 
 ```sh
 git clone https://github.com/getvoicify/claude-plugins
+mkdir -p <your-project>/.agents/skills
 cp -R claude-plugins/epic/skills/epic \
       claude-plugins/epic/skills/create \
       claude-plugins/epic/skills/migrate \
@@ -156,7 +157,8 @@ Invocation: by default skills are applied automatically when the agent
 determines they are relevant; they can also be manually invoked by typing
 `/` in Agent chat and searching for the skill name — the skill name is the
 dir name, so `/create`, `/epic`, `/migrate` (e.g. `/epic 9 status`,
-`/create a rate-limiter epic`).
+`/create a rate-limiter epic`; the docs pin only the `/skill-name` form —
+trailing-argument form to be confirmed in the cross-agent smoke).
 
 ### OpenCode
 
@@ -170,8 +172,9 @@ Invocation: skills trigger implicitly by description-match — there is no
 user-facing slash command. OpenCode lists each skill's name + description in
 its `skill` tool and the agent loads one by calling e.g.
 `skill({ name: "epic" })` when your request matches, so name the skill in
-your prompt: ask `Use the epic skill: status for epic #9` or
-`Use the create skill: a rate-limiter epic`.
+your prompt: ask `Use the epic skill: status for epic #9`,
+`Use the create skill: a rate-limiter epic`, or
+`Use the migrate skill: convert epic #9`.
 
 ## Smoke checklist
 
@@ -246,10 +249,9 @@ lookup for this repo and state which file it loaded and its parsed contents."
       editing `.claude/epic.yaml` — never add a gate-only
       `.agents/epic.yaml`, which would shadow the entire fallback file.
 - [ ] **Leg C** — **neither** file exists (`rm .claude/epic.yaml`). Pass:
-      the agent reports that neither `.agents/epic.yaml` nor
-      `.claude/epic.yaml` exists and states the driver's STOP: "repo
-      <owner/name> has no epic.yaml — author `.agents/epic.yaml` before
-      driving children there."
+      the agent reports the driver's missing-config STOP, naming BOTH paths
+      (`.agents/epic.yaml` and `.claude/epic.yaml`) as absent and
+      `.agents/epic.yaml` as the file to author before driving children.
 
 ## Releasing
 

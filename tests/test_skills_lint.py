@@ -381,7 +381,8 @@ def test_codex_catalog_has_local_epic_entry():
 # - `epic/README.md` `## Installing` must carry a `###` subsection per agent:
 #   Claude Code, Codex CLI, Kimi Code, Cursor CLI, OpenCode.
 # - Content guard: the `gh` CLI scopes string `repo, project, read:org` must
-#   appear somewhere in the README.
+#   appear inside the `## Requirements` section (a mention elsewhere in the
+#   README does not count).
 # - A top-level `## Smoke checklist` section must exist (executing it is
 #   Task 7's job — this lint asserts the document only).
 
