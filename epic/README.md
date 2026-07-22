@@ -213,9 +213,13 @@ getvoicify/gangan then the cwd repo) is by design.
       installed **and** authenticated.
 - [ ] `gh` CLI authenticated with scopes `repo, project, read:org`
       (`gh auth status` shows them).
-- [ ] A `python3` runtime is permitted — the skills' strict-YAML parse steps
-      assume one; headless runs without it fall back to direct file reads
-      (observed, harmless — noted so drivers aren't surprised).
+- [ ] A `python3` runtime is permitted (with `pyyaml` installable) —
+      REQUIRED: the skills' strict config-parse steps mandate python +
+      pyyaml, never regex-only extraction (see `skills/epic/SKILL.md`).
+      If the harness does not permit `python3`, STOP and grant it before
+      driving. (The config-fixture legs' Layer-2 lookup dry-runs, which
+      only locate and read the file, tolerated its absence — an
+      observation scoped to those legs, not the skills generally.)
 - [ ] A real epic to run `status` against — this epic is
       [getvoicify/claude-plugins#9](https://github.com/getvoicify/claude-plugins/issues/9).
 
