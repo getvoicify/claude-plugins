@@ -94,8 +94,7 @@ Project statuses set, body-rewrite diff summary, and "drive with `/epic <n> next
   issue state stays untouched.
 - A child referenced in the task-list but deleted/transferred on GitHub → report it
   and continue (operator decides whether to recreate).
-- Gate names in `custom_gates` must exist in the relevant repo's `.agents/epic.yaml`
-  catalog; unknown names → ask (keep-and-add-to-catalog-later vs drop).
-
-To locate a repo's epic.yaml config, check `.agents/epic.yaml` first, then
-`.claude/epic.yaml`.
+- Gate names in `custom_gates` must exist in the gate catalog of the relevant
+  repo's effective epic.yaml config (to locate it, check `.agents/epic.yaml`
+  first, then `.claude/epic.yaml`); unknown names → ask
+  (keep-and-add-to-catalog-later vs drop).

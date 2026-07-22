@@ -48,8 +48,9 @@ created on GitHub until the operator approves the full breakdown in phase 4.
 ## Phase 3 — Draft (spec + runbook)
 
 1. Pick the `docs_repo` = the working repo where most children land (ask if unclear).
-2. Write two files into a branch of the `docs_repo` checkout, following its
-   `.agents/epic.yaml` `docs` dirs and existing naming convention
+2. Write two files into a branch of the `docs_repo` checkout, following the
+   `docs` dirs from its effective epic.yaml config (primary `.agents/epic.yaml`,
+   fallback `.claude/epic.yaml`) and existing naming convention
    (`YYYY-MM-DD-<slug>-{design,plan}.md` style — mirror neighbors):
    - **Spec** (`docs.spec_dir`): problem, chosen approach + rejected alternatives,
      architecture/contract decisions, success criteria, out-of-scope list.
