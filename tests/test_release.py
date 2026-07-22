@@ -1,5 +1,7 @@
 import json
 
+import pytest
+
 import release
 
 
@@ -23,6 +25,82 @@ def test_write_then_read_version_roundtrip(tmp_path):
     assert release.read_version(tmp_path, "./epic") == "0.2.0"
     assert json.loads(pj.read_text())["version"] == "0.2.0"
     assert pj.read_text().endswith("\n")
+
+
+def _write_manifest(path, data):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, indent=2) + "\n")
+
+
+def test_write_version_writes_both_manifests(tmp_path):
+    claude_pj = tmp_path / "epic" / ".claude-plugin" / "plugin.json"
+    codex_pj = tmp_path / "epic" / ".codex-plugin" / "plugin.json"
+    _write_manifest(claude_pj, {"name": "epic", "version": "0.1.0"})
+    _write_manifest(codex_pj, {"name": "epic", "version": "0.1.0"})
+
+    release.write_version(tmp_path, "./epic", "0.2.0")
+
+    assert json.loads(claude_pj.read_text())["version"] == "0.2.0"
+    assert json.loads(codex_pj.read_text())["version"] == "0.2.0"
+    assert codex_pj.read_text().endswith("\n")
+
+
+def test_write_version_preserves_codex_manifest_extras(tmp_path):
+    claude_pj = tmp_path / "epic" / ".claude-plugin" / "plugin.json"
+    codex_pj = tmp_path / "epic" / ".codex-plugin" / "plugin.json"
+    _write_manifest(claude_pj, {"name": "epic", "version": "0.1.0"})
+    _write_manifest(
+        codex_pj,
+        {
+            "name": "epic",
+            "version": "0.1.0",
+            "description": "an epic plugin",
+            "skills": "./skills",
+        },
+    )
+
+    release.write_version(tmp_path, "./epic", "0.2.0")
+
+    data = json.loads(codex_pj.read_text())
+    assert data["version"] == "0.2.0"
+    assert data["skills"] == "./skills"
+    assert data["description"] == "an epic plugin"
+
+
+def test_write_version_converges_drifted_manifests(tmp_path):
+    claude_pj = tmp_path / "epic" / ".claude-plugin" / "plugin.json"
+    codex_pj = tmp_path / "epic" / ".codex-plugin" / "plugin.json"
+    _write_manifest(claude_pj, {"name": "epic", "version": "0.7.0"})
+    _write_manifest(codex_pj, {"name": "epic", "version": "0.5.0"})
+
+    release.write_version(tmp_path, "./epic", "0.8.0")
+
+    assert json.loads(claude_pj.read_text())["version"] == "0.8.0"
+    assert json.loads(codex_pj.read_text())["version"] == "0.8.0"
+
+
+def test_write_version_skips_absent_codex_manifest(tmp_path):
+    claude_pj = tmp_path / "epic" / ".claude-plugin" / "plugin.json"
+    _write_manifest(claude_pj, {"name": "epic", "version": "0.1.0"})
+
+    release.write_version(tmp_path, "./epic", "0.2.0")
+
+    assert json.loads(claude_pj.read_text())["version"] == "0.2.0"
+    assert not (tmp_path / "epic" / ".codex-plugin").exists()
+
+
+def test_write_version_leaves_claude_untouched_when_codex_malformed(tmp_path):
+    claude_pj = tmp_path / "epic" / ".claude-plugin" / "plugin.json"
+    codex_pj = tmp_path / "epic" / ".codex-plugin" / "plugin.json"
+    _write_manifest(claude_pj, {"name": "epic", "version": "0.1.0"})
+    codex_pj.parent.mkdir(parents=True, exist_ok=True)
+    codex_pj.write_text("{not json")
+    claude_before = claude_pj.read_text()
+
+    with pytest.raises(json.JSONDecodeError):
+        release.write_version(tmp_path, "./epic", "0.2.0")
+
+    assert claude_pj.read_text() == claude_before
 
 
 def test_tag_to_version_parses_well_formed():

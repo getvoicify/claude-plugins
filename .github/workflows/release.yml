@@ -49,6 +49,9 @@ jobs:
             tag="${name}-v${ver}"
             if [ "$bump" != "bootstrap" ]; then
               git add "${src#./}/.claude-plugin/plugin.json"
+              if [ -f "${src#./}/.codex-plugin/plugin.json" ]; then
+                git add "${src#./}/.codex-plugin/plugin.json"
+              fi
               git commit -m "chore(release): ${name} v${ver} [skip ci]"
             fi
             git tag -a "$tag" -m "${name} v${ver}"
