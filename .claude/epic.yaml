@@ -13,7 +13,7 @@ toolchain:
       Claude-compatibility checks.
 merge:
   method: squash
-  required_checks: []   # add the test job here after child #10 lands test.yml
+  required_checks: ["test"]
   approvals: 0
   require_last_push_approval: false
   required_review_thread_resolution: true
