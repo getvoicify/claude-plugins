@@ -1,0 +1,27 @@
+toolchain:
+  prefix: ""
+  commands:
+    setup: "python3 -m venv .venv && .venv/bin/pip install -q pytest pyyaml"
+    test: ".venv/bin/pytest tests/ -q"
+  notes: |
+    - No system pytest: run the setup command first. From child #10 onward
+      requirements-dev.txt exists — prefer `.venv/bin/pip install -r requirements-dev.txt`.
+    - Conventional Commits drive the SemVer release workflow (feat/fix release;
+      docs/chore don't) — keep subjects accurate. No AI-attribution trailers in
+      commits or PR bodies.
+    - The `claude` CLI (2.1.217 verified) is required for the runbook's
+      Claude-compatibility checks.
+merge:
+  method: squash
+  required_checks: []   # add the test job here after child #10 lands test.yml
+  approvals: 0
+  require_last_push_approval: false
+  required_review_thread_resolution: true
+  copilot_review: true
+docs:
+  spec_dir: docs
+  runbook_dir: docs
+worktrees:
+  root: /Users/tom/workspace/claude-plugins-worktrees
+  max_concurrent: 3
+gates: {}
