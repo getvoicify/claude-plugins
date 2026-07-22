@@ -137,8 +137,10 @@ top of four other agents' fallout). On a step-4 STOP, Task 5 may proceed
 **Order (doc-read precedes RED — the schema comes from live docs, not
 memory):**
 1. Fetch current Codex plugin docs (developers.openai.com/codex/build-plugins
-   and the marketplace page) via the sandbox fetch tool (`curl`/WebFetch are
-   blocked in this environment — use `ctx_fetch_and_index`). Note: docs
+   and the marketplace page) with whatever fetch mechanism your environment
+   provides (in this repo's Claude Code setup, `curl`/WebFetch are blocked —
+   use `ctx_fetch_and_index` there; a plain web fetch is fine elsewhere).
+   Note: docs
    distinguish `codex plugin marketplace add` (registers a catalog) from
    installing; confirm the actual local-install command.
 2. RED: lint test asserts the manifest exists, is valid JSON, `name ==
@@ -190,7 +192,7 @@ suite from `epic/README.md` alone.
    Codex add-vs-install; Cursor dirs) are IN that table; the verified Codex
    commands come from the README stub Task 4 recorded. Fresh research is
    limited to re-verifying the two cells the design flags (Cursor dirs,
-   Kimi project-level dir) via `ctx_fetch_and_index`. The smoke checklist,
+   Kimi project-level dir) against their live docs. The smoke checklist,
    per agent:
    install → invoke `create` (reach phase-1 questions, abort) → invoke the
    driver's `status` on a real epic → invoke `migrate`'s inspection step
