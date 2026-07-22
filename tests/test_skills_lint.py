@@ -228,13 +228,38 @@ def test_codex_manifest_name_is_epic():
     )
 
 
-def test_codex_manifest_version_lockstep_with_claude_manifest():
-    codex_version = load_json(CODEX_MANIFEST_PATH).get("version")
-    claude_version = load_json(CLAUDE_MANIFEST_PATH).get("version")
+def check_version_lockstep(codex_manifest_path, claude_manifest_path):
+    codex_version = load_json(codex_manifest_path).get("version")
+    claude_version = load_json(claude_manifest_path).get("version")
+    # Guard against a vacuous None == None pass when both manifests omit
+    # `version` — each must be a non-empty string BEFORE comparing.
+    for manifest_path, version in (
+        (codex_manifest_path, codex_version),
+        (claude_manifest_path, claude_version),
+    ):
+        assert isinstance(version, str) and version.strip(), (
+            f"{manifest_path} must declare a non-empty string `version`, "
+            f"got {version!r}"
+        )
     assert codex_version == claude_version, (
-        f"epic/.codex-plugin/plugin.json version ({codex_version!r}) must equal "
-        f"epic/.claude-plugin/plugin.json version ({claude_version!r})"
+        f"{codex_manifest_path} version ({codex_version!r}) must equal "
+        f"{claude_manifest_path} version ({claude_version!r})"
     )
+
+
+def test_codex_manifest_version_lockstep_with_claude_manifest():
+    check_version_lockstep(CODEX_MANIFEST_PATH, CLAUDE_MANIFEST_PATH)
+
+
+def test_version_lockstep_rejects_versionless_manifests(tmp_path):
+    # Both manifests omitting `version` must FAIL the lint — `.get("version")`
+    # yielding None == None is a vacuous pass, not lockstep.
+    codex_path = tmp_path / "codex-plugin.json"
+    claude_path = tmp_path / "claude-plugin.json"
+    codex_path.write_text(json.dumps({"name": "epic"}), encoding="utf-8")
+    claude_path.write_text(json.dumps({"name": "epic"}), encoding="utf-8")
+    with pytest.raises(AssertionError, match="version"):
+        check_version_lockstep(codex_path, claude_path)
 
 
 def test_codex_manifest_description_non_empty():
@@ -244,24 +269,53 @@ def test_codex_manifest_description_non_empty():
     )
 
 
-def test_codex_manifest_skills_field_present_and_resolves():
-    skills = load_json(CODEX_MANIFEST_PATH).get("skills")
+def check_codex_skills_field(manifest_path, epic_dir):
+    skills = load_json(manifest_path).get("skills")
     # PRESENT and a string — an omitted `skills` field must fail, not
     # vacuously pass (issue #13 pin, blocking defect 2).
     assert isinstance(skills, str), (
-        "epic/.codex-plugin/plugin.json must declare a `skills` field (string path)"
+        f"{manifest_path} must declare a `skills` field (string path)"
     )
     assert skills.startswith("./"), (
         f"`skills` path must be `./`-prefixed, got {skills!r}"
     )
-    skills_dir = (EPIC_DIR / skills).resolve()
+    # Resolve fully (symlinks included) and require containment — a
+    # `./`-prefixed path like `./../somewhere` must not escape the plugin dir.
+    epic_dir_resolved = epic_dir.resolve()
+    skills_dir = (epic_dir_resolved / skills).resolve()
+    assert skills_dir.is_relative_to(epic_dir_resolved), (
+        f"`skills` path {skills!r} resolves to {skills_dir}, "
+        f"which escapes the plugin dir {epic_dir_resolved}"
+    )
     assert skills_dir.is_dir(), (
-        f"`skills` path {skills!r} does not resolve to a directory under epic/"
+        f"`skills` path {skills!r} does not resolve to a directory under {epic_dir}"
     )
     for name in SKILL_NAMES:
         assert (skills_dir / name).is_dir(), (
             f"`skills` dir {skills!r} is missing the `{name}` skill dir"
         )
+
+
+def test_codex_manifest_skills_field_present_and_resolves():
+    check_codex_skills_field(CODEX_MANIFEST_PATH, EPIC_DIR)
+
+
+def test_codex_skills_path_escaping_epic_dir_is_rejected(tmp_path):
+    # A `./`-prefixed path may still escape the plugin dir (`./../somewhere`).
+    # Build an escaping target that EXISTS and contains all three skill dirs,
+    # so every current check would pass — the lint must still reject it.
+    epic_dir = tmp_path / "epic"
+    manifest_path = epic_dir / ".codex-plugin" / "plugin.json"
+    manifest_path.parent.mkdir(parents=True)
+    outside = tmp_path / "outside-skills"
+    for name in SKILL_NAMES:
+        (outside / name).mkdir(parents=True)
+    manifest_path.write_text(
+        json.dumps({"name": "epic", "skills": "./../outside-skills"}),
+        encoding="utf-8",
+    )
+    with pytest.raises(AssertionError, match="skills"):
+        check_codex_skills_field(manifest_path, epic_dir)
 
 
 def test_codex_catalog_name_is_tom_plugins():

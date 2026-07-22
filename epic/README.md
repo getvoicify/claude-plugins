@@ -54,20 +54,27 @@ driver command.
 
 ### Codex CLI
 
-Register this repo's plugin catalog (`.agents/plugins/marketplace.json`):
+Register this repo's plugin catalog — this adds the `tom-plugins` marketplace
+from the repo's `.agents/plugins/marketplace.json`:
 
 ```sh
 codex plugin marketplace add getvoicify/claude-plugins
 ```
 
-That command only registers the catalog — there is no non-interactive install
-command. Install the `epic` plugin through the CLI's interactive `/plugins`
-browser, or through the ChatGPT desktop app.
+Then install the `epic` plugin non-interactively (available since codex-cli
+0.145.0):
+
+```sh
+codex plugin add epic@tom-plugins
+```
+
+The CLI's interactive `/plugins` browser and the ChatGPT desktop app remain
+alternatives to the non-interactive install.
 
 Pickup: start a new session after install (CLI) / restart the desktop app for
 repo-catalog pickup.
 
-Install smoke pending on this machine — commands per developers.openai.com/codex docs (fetched 2026-07-22); to be verified when the parked smoke runs.
+Verified with codex-cli 0.145.0 (2026-07-22): marketplace resolved via `.agents/plugins/marketplace.json`, plugin installed to `~/.codex/plugins/cache/tom-plugins/epic/<version>`, and `epic:create` / `epic:epic` / `epic:migrate` all listed as available skills.
 
 ## Releasing
 
