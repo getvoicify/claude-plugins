@@ -27,7 +27,8 @@ def skill_md_path(name):
 def parse_frontmatter(path):
     text = path.read_text(encoding="utf-8")
     assert text.startswith("---\n"), f"{path}: SKILL.md must open with YAML frontmatter"
-    end = text.index("\n---\n", 4)
+    end = text.find("\n---\n", 4)
+    assert end != -1, f"{path}: SKILL.md missing closing frontmatter delimiter (---)"
     frontmatter = yaml.safe_load(text[4:end])
     assert isinstance(frontmatter, dict), f"{path}: frontmatter must be a YAML mapping"
     return frontmatter
@@ -54,6 +55,16 @@ def test_frontmatter_description_non_empty(name):
     assert isinstance(description, str) and description.strip(), (
         f"epic/skills/{name}/SKILL.md frontmatter `description` must be non-empty"
     )
+
+
+def test_parse_frontmatter_missing_closing_delimiter_fails_clearly(tmp_path):
+    path = tmp_path / "SKILL.md"
+    path.write_text("---\nname: broken\ndescription: never closed\n", encoding="utf-8")
+    with pytest.raises(AssertionError) as excinfo:
+        parse_frontmatter(path)
+    message = str(excinfo.value)
+    assert str(path) in message, "failure must name the malformed file"
+    assert "closing frontmatter delimiter" in message
 
 
 @pytest.mark.parametrize("name", SKILL_NAMES)
