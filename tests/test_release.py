@@ -1,5 +1,7 @@
 import json
 
+import pytest
+
 import release
 
 
@@ -85,6 +87,20 @@ def test_write_version_skips_absent_codex_manifest(tmp_path):
 
     assert json.loads(claude_pj.read_text())["version"] == "0.2.0"
     assert not (tmp_path / "epic" / ".codex-plugin").exists()
+
+
+def test_write_version_leaves_claude_untouched_when_codex_malformed(tmp_path):
+    claude_pj = tmp_path / "epic" / ".claude-plugin" / "plugin.json"
+    codex_pj = tmp_path / "epic" / ".codex-plugin" / "plugin.json"
+    _write_manifest(claude_pj, {"name": "epic", "version": "0.1.0"})
+    codex_pj.parent.mkdir(parents=True, exist_ok=True)
+    codex_pj.write_text("{not json")
+    claude_before = claude_pj.read_text()
+
+    with pytest.raises(json.JSONDecodeError):
+        release.write_version(tmp_path, "./epic", "0.2.0")
+
+    assert claude_pj.read_text() == claude_before
 
 
 def test_tag_to_version_parses_well_formed():

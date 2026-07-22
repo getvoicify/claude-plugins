@@ -33,10 +33,12 @@ def _patch_version(path, new_version):
 
 
 def write_version(repo_root, source, new_version):
-    _patch_version(_plugin_json(repo_root, source), new_version)
+    # Patch the optional Codex manifest first: if it is present but broken,
+    # fail before mutating anything so the manifests never drift apart.
     codex_path = _codex_plugin_json(repo_root, source)
     if codex_path.is_file():
         _patch_version(codex_path, new_version)
+    _patch_version(_plugin_json(repo_root, source), new_version)
 
 
 def _git(*args):
