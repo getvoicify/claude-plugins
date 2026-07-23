@@ -32,8 +32,10 @@ invocation loops the same per-child mechanics autonomously until the epic is don
   `gh search issues --owner <owner> --state open "type:Epic" --json number,title,repository`
   falling back to label `tracking-epic` if issue types are not in use. If
   `git remote get-url origin` yields no owner (no `origin` remote, or the cwd is not a
-  git repo), interactive modes ASK the operator for an owner; `run` STOPs: "can't infer
-  owner — pass an epic number or run from a repo checkout."
+  git repo), the no-arg listing itself asks the operator for an owner when a human is
+  driving — never emit `gh search issues` with an unresolved `<owner>`; in
+  `run`/non-interactive contexts it STOPs: "can't infer owner — pass an epic number or
+  run from a repo checkout."
 - Mode defaults to `status`.
 - `--stop-at-pr`: valid on `next`/`<child#>` only. On `run` → STOP: "`--stop-at-pr` is
   not compatible with `run`; drop the flag or use `next`."
