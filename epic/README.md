@@ -1,9 +1,9 @@
 # epic — unified GitHub epic driver
 
-Drives GitHub epics one child at a time across the gangan repos, using native
+Drives GitHub epics one child at a time across your repos, using native
 **sub-issues** for hierarchy, native **blocked-by relations** for dependencies, and
-**the configured org Project (default #2 "Gangan")** for live status. Replaces the per-repo
-`.claude/commands/epic.md` variants in gangan-mobile and gangan-api.
+**a configured project board** for live status. Replaces bespoke per-repo
+`.claude/commands/epic.md` variants.
 
 ## Commands
 
@@ -16,12 +16,13 @@ files are thin shims that read and follow the matching SKILL.md, so the familiar
 |---|---|---|
 | `/epic <epic#> [status\|next\|run\|<child#>] [--stop-at-pr]` | `skills/epic/SKILL.md` | Drive an epic. `next`/`<child#>` take one child through merge + sweep (or stop at PR with `--stop-at-pr`); `run` loops autonomously to completion. |
 | `/epic:create [rough idea]` | `skills/create/SKILL.md` | Brainstorm session → spec + runbook (docs PR) → epic + sub-issues + dependencies + Project items. Nothing touches GitHub until you approve the breakdown. |
-| `/epic:migrate <epic#> [--repo owner/name]` | `skills/migrate/SKILL.md` | Convert a legacy task-list epic (e.g. gangan-api #278–#282) to the new model. |
+| `/epic:migrate <epic#> [--repo owner/name]` | `skills/migrate/SKILL.md` | Convert a legacy task-list epic (e.g. a working repo's #101–#105) to the new model. |
 
 ## Architecture
 
-- **Epic home**: new epics live in `getvoicify/gangan` (planning repo); children live
-  in their working repos as cross-repo sub-issues. Legacy epics stay where they are.
+- **Epic home**: new epics live in the planning repo (`planning.repo` from the
+  checkout's epic.yaml); children live in their working repos as cross-repo sub-issues.
+  Legacy epics stay where they are.
 - **Two-layer config**:
   - Per-epic: a slim fenced `epic-config` YAML block in the epic issue body
     (`epic`, `repo`, `docs_repo`, `worktree_prefix`, `spec`, `runbook`, `custom_gates`).
@@ -55,6 +56,20 @@ Merge-through is the default terminal behavior everywhere (`--stop-at-pr` to opt
 out). One child in flight at a time. Worktrees live under `.worktrees/` and are
 swept only after their PR merges. Tunable budget constants are documented in the
 driver command.
+
+## Migrating an existing install
+
+Epics whose bodies omit `project:` keep working the moment their planning repo's
+epic.yaml carries a `planning:` block — a one-line backfill, no re-migration of epic
+issues. The driver resolves the project number in D4 order (`epic-config.project` →
+`planning.project` → STOP), so add to the planning repo's `.agents/epic.yaml` (or the
+`.claude/epic.yaml` fallback):
+
+```yaml
+planning: {repo: <owner>/<planning-repo>, project: <n>}
+```
+
+That backfill is the entire back-compat story.
 
 ## Installing
 
@@ -217,8 +232,7 @@ Last smoke: all five agents verified 2026-07-22/23 — claude 2.1.217,
 codex-cli 0.145.0, kimi 0.29.0, opencode 1.17.13 (run as
 `opencode -m opencode/deepseek-v4-flash-free` — the configured default
 model was broken on the smoke machine, hence the explicit flag), cursor-agent
-2026.07.20. The gangan-default-epic-home probe order (skills try
-getvoicify/gangan then the cwd repo) is by design.
+2026.07.20.
 
 **Preconditions**
 
