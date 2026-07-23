@@ -438,3 +438,83 @@ def test_readme_has_smoke_checklist_section():
     assert re.search(r"^## Smoke checklist[ \t]*$", read_epic_readme(), re.MULTILINE), (
         "epic/README.md must have a `## Smoke checklist` section"
     )
+
+
+# Task 7: forbidden-literal ratchet (design §D9, runbook §Child 1).
+#
+# Scope for THIS child is EXACTLY the github-graphql reference PLUS every file
+# under epic/commands/ — NOT the whole epic/skills/ tree. The SKILL.md files
+# still carry the old literals and are out of scope here; widening the ratchet
+# over them is children 2/3's job (README is child 4's). Keeping the scope
+# narrow is what lets the suite stay green on main between merges.
+#
+# Two forbidden classes:
+#  - `gangan`, `getvoicify` — owner/org slugs, matched CASE-INSENSITIVELY.
+#  - ProjectV2 node-ID shapes — matched CASE-SENSITIVELY by an alternation that
+#    catches all three prefixes: `PVT_` (project), `PVTF_` (field), `PVTSSF_`
+#    (single-select field). A bare `PVT_` substring would miss the `PVTSSF_`
+#    field IDs, so the alternation is mandatory. Examples must use placeholders
+#    (`<projectId>`, `<statusFieldId>`), never realistically-shaped IDs.
+
+GITHUB_GRAPHQL_REFERENCE = SKILLS_ROOT / "epic" / "references" / "github-graphql.md"
+EPIC_COMMANDS_DIR = REPO_ROOT / "epic" / "commands"
+
+FORBIDDEN_CI_LITERALS = ("gangan", "getvoicify")
+NODE_ID_SHAPE_RE = re.compile(r"PVT(?:_|SSF_|F_)")
+
+
+def forbidden_literal_scope_paths():
+    """Files this child's ratchet covers: the github-graphql reference plus
+    every file under epic/commands/. Later children widen the scope."""
+    paths = [GITHUB_GRAPHQL_REFERENCE]
+    paths.extend(p for p in sorted(EPIC_COMMANDS_DIR.rglob("*")) if p.is_file())
+    return paths
+
+
+def find_forbidden_literals(text):
+    """Forbidden literals present in `text`: owner/org slugs (case-insensitive)
+    and realistically-shaped ProjectV2 node IDs (case-sensitive)."""
+    hits = []
+    lowered = text.lower()
+    hits.extend(literal for literal in FORBIDDEN_CI_LITERALS if literal in lowered)
+    if NODE_ID_SHAPE_RE.search(text):
+        hits.append("PVT node-id shape")
+    return hits
+
+
+@pytest.mark.parametrize(
+    "path",
+    forbidden_literal_scope_paths(),
+    ids=lambda p: str(p.relative_to(REPO_ROOT)),
+)
+def test_no_forbidden_literals_in_scope(path):
+    hits = find_forbidden_literals(path.read_text(encoding="utf-8"))
+    assert not hits, (
+        f"{path.relative_to(REPO_ROOT)}: forbidden literal(s) {sorted(set(hits))} — "
+        f"the github-graphql reference and epic/commands/ must be owner-agnostic "
+        f"and use placeholder IDs (<projectId>, <statusFieldId>, …)"
+    )
+
+
+def test_node_id_shape_lint_is_non_vacuous():
+    # Synthetic fixtures — prove the case-sensitive node-ID lint actually flags
+    # a project ID (`PVT_…`) AND a single-select field ID (`PVTSSF_…`). This
+    # stays green once the reference table is deleted, so it can't rot into an
+    # `assert "PVT" in <reference_text>` that becomes un-greenable.
+    assert find_forbidden_literals("id: PVT_kwDOxxxx") == ["PVT node-id shape"]
+    assert find_forbidden_literals("statusFieldId: PVTSSF_xxxx") == ["PVT node-id shape"]
+    # The field prefix `PVTF_` is caught by the same alternation.
+    assert NODE_ID_SHAPE_RE.search("PVTF_xxxx")
+    # A bare `PVT_`-only matcher would miss these — the alternation must not.
+    assert NODE_ID_SHAPE_RE.search("PVTSSF_xxxx")
+
+
+def test_reference_documents_org_to_user_fallback():
+    text = GITHUB_GRAPHQL_REFERENCE.read_text(encoding="utf-8")
+    assert "organization(login:" in text, (
+        "github-graphql.md must keep the organization(login:) resolution query"
+    )
+    assert "user(login:" in text, (
+        "github-graphql.md must document the organization→user(login:) fallback "
+        "recipe (org-form NOT_FOUND falls back to a user login)"
+    )

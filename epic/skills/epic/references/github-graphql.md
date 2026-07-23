@@ -1,43 +1,83 @@
 # GitHub GraphQL reference — epic-driver plugin
 
-Verified live against the `getvoicify` org on 2026-06-10. All commands in this plugin
-share these incantations. Run everything through `gh api graphql` (never curl/wget).
+All commands in this plugin share these incantations. Every owner-scoped query
+derives its owner from the owner half of `epic-config.repo` (see the config
+contract below) — there is no `org:` config key. Run everything through
+`gh api graphql` (never curl/wget).
 
-## Constants (fast-path cache — re-resolve at runtime if any query 404s or when `epic-config.project` ≠ 2)
+## Config contract (Layer-2 `planning:` + project-number resolution)
 
-| Thing | Value |
-|---|---|
-| Planning repo (default epic home) | `getvoicify/gangan` |
-| Org project (default; override via epic-config `project`) | number **2** ("Gangan") |
-| `projectId` | `PVT_kwDOBw1T1M4BaShO` |
-| Status field id | `PVTSSF_lADOBw1T1M4BaShOzhVLLe8` |
-| Status options | Todo `d36861b6` · In Progress `8d20dd23` · In Review `3c61b8ea` · Done `9d096808` · Parked `bc4e1fe5` |
-| Priority field id | `PVTSSF_lADOBw1T1M4BaShOzhVLc2k` |
-| Priority options | P0 `714602c0` · P1 `bc09f009` · P2 `88d520fc` |
+The working repo's epic config (`.agents/epic.yaml` first, then
+`.claude/epic.yaml`) may carry an optional top-level Layer-2 section that names
+where epics live and which ProjectV2 tracks them:
 
-**The `projectId` + Status/Priority field & option ids above are the fast-path cache
-for the default project (number 2) only.** When `epic-config.project` names a different
-project, ignore these cached ids and resolve them at runtime via the re-resolution query
-below (substituting the configured number).
+```yaml
+planning:
+  repo: owner/name    # where new epic issues are homed
+  project: <number>   # ProjectV2 number on that owner
+```
 
-Re-resolution query when an ID has gone stale:
+**Owner** for every owner-scoped GraphQL query is the owner half of
+`epic-config.repo` (or `planning.repo` at Layer-1 load, before any epic-config
+exists). No `org:` key — an owner may be an organization or a user account, and
+the resolution recipe below tries both.
+
+**Project number** resolves in this order — there is no hardcoded default:
+
+1. `epic-config.project` (the epic issue body's own project number); else
+2. Layer-2 `planning.project`; else
+3. STOP — interactive/attended modes surface via the missing-config flow; `run`
+   mode hard-stops with the "config missing/incomplete" message naming
+   `planning.project`. Never assume a project number.
+
+## Runtime ID resolution (owner-agnostic; the sole resolution path)
+
+There is no cached ID table. Every invocation resolves `projectId` + the Status
+and Priority field & option IDs at runtime from `(owner, project-number)`, once
+per invocation (not per mutation). Try the `organization(login:)` form first:
 
 ```graphql
-{ organization(login:"getvoicify") { projectV2(number:<project>) {   # <project> = epic-config.project, default 2
+{ organization(login:"<owner>") { projectV2(number:<project>) {   # <owner> = owner half of epic-config.repo; <project> per the resolution order above
     id
     status: field(name:"Status")   { ... on ProjectV2SingleSelectField { id options { id name } } }
     priority: field(name:"Priority"){ ... on ProjectV2SingleSelectField { id options { id name } } }
 } } }
 ```
 
-If the configured project has no `Status`/`Priority` single-select field, or is missing
-the expected option names, **STOP and surface in interactive/attended mode, or park the
-child (Status → Parked) in `run` mode** — NEVER fall back to the cached project-2 ids.
+**org → user fallback.** `gh api graphql` exits **non-zero even when it returns
+partial data**, so the exit code is NOT the signal — parse the JSON response
+**body**. If `data.organization` is null and `errors[]` carries an entry with
+`type == "NOT_FOUND"`, the owner is a user account, not an org: re-run the exact
+same query with the `user(login:)` form (ProjectsV2 exist on user accounts too):
 
-## Error handling (extends the 404 / re-resolve note above)
+```graphql
+{ user(login:"<owner>") { projectV2(number:<project>) {   # identical shape; owner resolved as a user account
+    id
+    status: field(name:"Status")   { ... on ProjectV2SingleSelectField { id options { id name } } }
+    priority: field(name:"Priority"){ ... on ProjectV2SingleSelectField { id options { id name } } }
+} } }
+```
 
-A 404 / stale-ID means *re-resolve* (see above). Everything else falls into **transient**
-(retry or sleep-resume) vs **permanent** (surface / park). Classify, never blind-retry.
+If the `user(login:)` form ALSO returns `errors[].type == "NOT_FOUND"` (a
+NOT_FOUND on **both** owner kinds), the login or project genuinely doesn't exist
+— **STOP, do not loop.** Surface in interactive/attended mode; hard-stop `run`.
+
+Capture the returned `id` as `<projectId>`; the `status:` / `priority:` aliases
+carry `<statusFieldId>` / `<priorityFieldId>` and their option ids
+(`<todoOptionId>`, `<inProgressOptionId>`, `<inReviewOptionId>`, `<doneOptionId>`,
+`<parkedOptionId>`, `<p0OptionId>` …). Every example below uses these
+placeholders — never realistically-shaped IDs.
+
+If the resolved project has **no** `Status` / `Priority` single-select field, or
+is missing the expected option names, that is a **config error** — **STOP and
+surface in interactive/attended mode, or park the child (Status → Parked) in
+`run` mode.** Never substitute another project's IDs to paper over it.
+
+## Error handling
+
+A 404 / stale node ID means *re-resolve* the IDs via the resolution query above
+(see "Runtime ID resolution"). Everything else falls into **transient** (retry
+or sleep-resume) vs **permanent** (surface / park). Classify, never blind-retry.
 
 **Reads (queries).** On 5xx or timeout: bounded retry, up to 3 attempts, exponential
 backoff (e.g. 1s → 2s → 4s). After the 3rd fails, treat as a transient infra failure
@@ -64,7 +104,7 @@ Do NOT hammer — repeated hits escalate the block.
 |---|---|---|
 | 5xx, timeout | transient | retry w/ backoff (≤3); reads blind, mutations re-verify-first |
 | `RATELIMITED` / `403` + `retry-after` / `x-ratelimit-remaining: 0` | transient | sleep to reset, resume |
-| 404 / stale node id | recoverable | re-resolve IDs (above), retry |
+| 404 / stale node id | recoverable | re-resolve IDs (see Runtime ID resolution), retry |
 | 4xx other (422, 401, schema/validation errors) | permanent | surface / park — never retry |
 
 In `run` mode an exhausted-retry transient failure parks the child with a diagnostic
@@ -120,12 +160,12 @@ Add an issue to the project, then set fields (two steps; capture the returned it
 mutation { addProjectV2ItemById(input: {projectId: "<projectId>", contentId: "<issue node id>"}) { item { id } } }
 mutation { updateProjectV2ItemFieldValue(input: {
   projectId: "<projectId>", itemId: "<item id>",
-  fieldId: "<Status field id>", value: {singleSelectOptionId: "<option id>"}}) { projectV2Item { id } } }
+  fieldId: "<statusFieldId>", value: {singleSelectOptionId: "<option id>"}}) { projectV2Item { id } } }
 ```
 
 Find an issue's existing project item without re-adding: use `projectItems(first:5)`
-on the Issue node and filter `project { number } == <project>` (the configured
-epic-config `project`, default 2). `addProjectV2ItemById` is
+on the Issue node and filter `project { number } == <project>` (the resolved project
+number — see the config contract). `addProjectV2ItemById` is
 idempotent (returns the existing item) — safe to call blindly.
 
 **Lifecycle transitions the driver MUST write:**
@@ -166,10 +206,14 @@ token-matches and returns unrelated PRs. A PR counts as **merged** only when
 `state == "MERGED"` / `mergedAt != null`. Paginate past 100 PRs / 100 closes refs if
 an epic ever exceeds them (silent truncation would corrupt the mapping).
 
-## Review threads + Copilot review (pre-merge gates)
+## Review threads + Copilot review (config-conditional pre-merge gates)
 
-The driver MUST resolve every review thread and ensure every Copilot comment is
-resolved before merge. These incantations make those gates executable.
+The driver resolves review threads before merge (governed by
+`merge.required_review_thread_resolution`). The Copilot gate is
+**config-conditional**: it applies **only when `merge.copilot_review` is true** —
+when it is false or absent, skip the Copilot gate cleanly and note the skip
+(never silently). When enabled, ensure every Copilot comment is resolved before
+merge. These incantations make those gates executable.
 
 Discover review threads on a PR (the comment author login identifies the bot —
 CodeRabbit vs GitHub Copilot; the Copilot reviewer bot login is
@@ -192,7 +236,7 @@ mutation { resolveReviewThread(input:{threadId:"<thread id>"}) { thread { isReso
 
 Request a Copilot review (REST — adds the Copilot reviewer bot). **GOTCHA:** 422s if
 Copilot code review is not enabled for the repo — that 422 is how the driver detects
-"Copilot not available":
+"Copilot not available" (skip the gate and note it):
 
 ```bash
 gh api -X POST repos/{owner}/{repo}/pulls/{number}/requested_reviewers \
@@ -215,7 +259,13 @@ State: bot in `reviewRequests` → **requested, pending**; bot absent everywhere
 **not requested**; bot in `latestReviews`/`reviews` → **reviewed** (then walk
 `reviewThreads` above for its unresolved comments).
 
-## Claude Review action (PRIMARY review gate)
+## Claude Review action (config-conditional review gate)
+
+**Config-conditional:** this gate applies **only when `claude-review` is listed
+in the repo's `merge.required_checks`.** When it is absent, skip the Claude
+Review gate cleanly and note the skip (never silently) — do not assume the
+workflow exists in every repo. When it IS required, treat it as the primary
+post-PR gate as follows.
 
 The `claude-review` workflow (`.github/workflows/claude-review.yml`) reviews the latest
 head of every non-draft PR, posts inline comments, submits a formal
@@ -249,15 +299,25 @@ verify it once against `statusCheckRollup` if a repo renames the job.
 
 ## Issue types
 
-Org has Task / Bug / Feature (+ Epic once created — requires `admin:org` scope or org
-Settings → Planning). Tag with:
+Issue types are owner-derived (org → user dual, same NOT_FOUND fallback as ID
+resolution). An org may define Task / Bug / Feature (+ Epic once created — Epic
+requires `admin:org` scope or org Settings → Planning). Tag with:
 
 ```graphql
 mutation { updateIssueIssueType(input: {issueId: "<node id>", issueTypeId: "<type id>"}) { issue { number } } }
 ```
 
-List type ids: `{ organization(login:"getvoicify") { issueTypes(first:10){ nodes { id name } } } }`.
-If the Epic type doesn't exist yet, skip tagging silently — it is cosmetic.
+List type ids via the `organization(login:)` form:
+
+```graphql
+{ organization(login:"<owner>") { issueTypes(first:10){ nodes { id name } } } }
+```
+
+If this returns `errors[].type == "NOT_FOUND"` parsed from the response body, the
+owner is a **user account**. User accounts have **no org issue types**, so that
+path takes the fallback and yields no types **without error** — skip type-tagging
+silently (it is cosmetic). Likewise, if the Epic type doesn't exist yet, skip
+tagging silently.
 
 ## Required token scopes
 

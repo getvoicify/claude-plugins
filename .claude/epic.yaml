@@ -11,6 +11,9 @@ toolchain:
       commits or PR bodies.
     - The `claude` CLI (2.1.217 verified) is required for the runbook's
       Claude-compatibility checks.
+planning:
+  repo: getvoicify/claude-plugins
+  project: 2
 merge:
   method: squash
   required_checks: ["test"]
