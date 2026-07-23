@@ -1,15 +1,17 @@
 ---
 name: epic
-description: Drive a GitHub epic (sub-issues + org Project) one child at a time
+description: Drive a GitHub epic (sub-issues + a project board) one child at a time
 ---
 
 The text after the skill name is the epic/child reference.
 
 You are driving a GitHub epic. Epics are issues with **native sub-issues** as children
 and **native blocked-by relations** as the dependency graph; live state is tracked in
-**the configured org project** (epic-config `project`, default #2 "Gangan"). New epics are homed in the planning repo
-`getvoicify/gangan`; children live in the working repos. Legacy epics may be homed
-elsewhere — the `repo` field of the epic-config decides.
+**the configured project board** (resolve its number `epic-config.project` → Layer-2
+`planning.project` → STOP; there is no hardcoded default). New epics are homed in the
+planning repo (`planning.repo` from the checkout's epic.yaml); children live in the
+working repos. Legacy epics may be homed elsewhere — the `repo` field of the
+epic-config decides.
 
 Read `references/github-graphql.md` NOW — every GraphQL
 incantation, project/field ID, lifecycle table, and the PR-mapping rule live there.
@@ -25,9 +27,15 @@ invocation loops the same per-child mechanics autonomously until the epic is don
 /epic <epic#> [status | next | run | <child#>] [--stop-at-pr] [--sweep]
 ```
 
-- `<epic#>` required. With no argument: list open epics and STOP —
-  `gh search issues --owner getvoicify --state open "type:Epic" --json number,title,repository`
-  falling back to label `tracking-epic` if issue types are not in use.
+- `<epic#>` required. With no argument: list open epics and STOP — scope `--owner` to
+  the cwd origin's owner (owner half of `git remote get-url origin`):
+  `gh search issues --owner <owner> --state open "type:Epic" --json number,title,repository`
+  falling back to label `tracking-epic` if issue types are not in use. If
+  `git remote get-url origin` yields no owner (no `origin` remote, or the cwd is not a
+  git repo), the no-arg listing itself asks the operator for an owner when a human is
+  driving — never emit `gh search issues` with an unresolved `<owner>`; in
+  `run`/non-interactive contexts it STOPs: "can't infer owner — pass an epic number or
+  run from a repo checkout."
 - Mode defaults to `status`.
 - `--stop-at-pr`: valid on `next`/`<child#>` only. On `run` → STOP: "`--stop-at-pr` is
   not compatible with `run`; drop the flag or use `next`."
@@ -39,15 +47,26 @@ invocation loops the same per-child mechanics autonomously until the epic is don
 
 ### Layer 1: per-epic `epic-config` (epic issue body)
 
-1. `gh issue view <epic#> --repo getvoicify/gangan --json body,state,title,number`
-   (if not found there, try the cwd repo — legacy epics are homed in working repos).
+1. Locate the epic issue — cwd repo FIRST:
+   `gh issue view <epic#> --repo <cwd owner/name> --json body,state,title,number`. If
+   not found there, fall back to `planning.repo` from the CWD CHECKOUT's epic.yaml — at
+   Layer-1 load time no child has been selected yet, so the cwd checkout is the only
+   Layer-2 source: check `.agents/epic.yaml` first, then `.claude/epic.yaml`, and read
+   `planning.repo`. Neither the cwd repo nor a resolvable `planning.repo` locates the
+   epic (or the cwd checkout has no epic.yaml) → interactive modes
+   (`status`/`next`/`<child#>`) ASK the operator which repo homes it; `run` STOPs:
+   "`run` aborted: cannot locate epic #<n> — no cwd match and no `planning.repo` in the
+   cwd checkout's epic.yaml." Legacy epics homed in working repos are covered by the
+   cwd-first order.
 2. Parse the fenced `epic-config` YAML block STRICTLY (python + pyyaml via the sandbox
    runner; `pip install --break-system-packages --quiet pyyaml` only on ImportError;
    never regex-only extraction). Keys:
    - `epic` (int) — must equal `<epic#>` (mismatch → STOP).
    - `repo` (`owner/name`) — where THIS epic issue lives.
-   - `project` (int, optional) — org ProjectV2 number for status tracking; omit to
-     default to `2` (Gangan). When set to another number, the driver re-resolves
+   - `project` (int, optional) — ProjectV2 number for status tracking. When omitted,
+     resolve it from Layer-2 `planning.project`; if that too is absent → STOP (no
+     hardcoded default — back-compat is a one-line `planning.project` backfill in the
+     cwd checkout's epic.yaml). Whatever number resolves, the driver re-resolves
      projectId + field & option ids at runtime (see github-graphql.md).
    - `docs_repo` (`owner/name`) — working repo where `spec`/`runbook` paths resolve.
    - `worktree_prefix` — must match `^[a-z0-9]+(-[a-z0-9]+)*$` (else STOP: "invalid
@@ -123,7 +142,7 @@ the operator to clone it; never drive via API-only edits.
 
 ## Epic-completion lifecycle (all modes)
 
-The epic issue has its OWN item on the configured org project (epic-config `project`, default #2) — the driver owns its Status just
+The epic issue has its OWN item on the configured project board (the `project` resolved via the D4 order `epic-config.project` → `planning.project` → STOP) — the driver owns its Status just
 like the children's. Every invocation MUST observe it: fetch the epic node's
 `projectItems` + Status alongside the sub-issues (the discovery query in the reference
 includes it); epic not on the configured project → `addProjectV2ItemById` (idempotent) before any
@@ -188,7 +207,8 @@ Report only — no driving, and **read-only by default** (mutates NOTHING unless
 ### 2. Drive (delegated implementation; per-repo recipe from epic.yaml + runbook)
 
 Apply the child repo's `toolchain.prefix` to every build/test command. STOP if a
-required prefix resolves empty (e.g. JAVA_HOME on gangan-mobile).
+required prefix resolves empty (e.g. a repo whose toolchain needs an env prefix but the
+config leaves it blank).
 
 1. **Worktree** per HARD constraints.
 2. **Context**: `gh issue view` the child; read `spec` + `runbook` from the
@@ -226,17 +246,22 @@ required prefix resolves empty (e.g. JAVA_HOME on gangan-mobile).
    `PRE_PR_REVIEW_ROUNDS` (default 3); exhausted with blocking findings open → interactive:
    STOP and hand off; `run`: park. When work is delegated, trust-but-verify every
    subagent summary. The
-   local CodeRabbit CLI pass is RETIRED here — the **Claude Review action** is now
-   the primary post-PR review gate (fires automatically on PR open, step 7; gated
-   in the merge phase, step 3). CodeRabbit's bot review and Copilot are likewise
-   gated in the merge phase, not run locally pre-PR.
+   local CodeRabbit CLI pass is RETIRED here. The post-PR **Claude Review action** is a
+   config-conditional gate: it applies only when `claude-review` is listed in the
+   repo's `merge.required_checks` (then it fires automatically on PR open, step 7, and
+   is driven in the merge phase, step 3); when that check is absent, no Claude Review
+   gate runs — skip it cleanly and note the skip, the same shape as the Copilot N/A
+   path. CodeRabbit's bot review and Copilot are likewise gated in the merge phase, not
+   run locally pre-PR.
 7. **PR**: rebase on `origin/main`; `gh pr create` → base `main`, body `Closes #<n>`
    (same-repo — children's PRs always close issues in their own repo), summary, test
    plan including every `pr-test-plan` gate's record. Comment the PR URL on the
-   child. Opening the PR automatically triggers the **Claude Review action**
+   child. When `claude-review` is listed in the repo's `merge.required_checks`, opening
+   the PR automatically triggers the **Claude Review action**
    (`.github/workflows/claude-review.yml` — the `claude-review` required check): it
    reviews the head, posts inline comments, and submits a formal APPROVE /
-   REQUEST_CHANGES review; it is the PRIMARY review gate driven in step 3. When
+   REQUEST_CHANGES review, driven in the merge phase, step 3. When `claude-review` is
+   not a required check, no such gate runs — skip it cleanly and note the skip. When
    `copilot_review` is enabled, request a Copilot review via the
    `requested_reviewers` call in the reference's "Review threads + Copilot review"
    section; a 422 means Copilot review is not available on this repo → treat Copilot
@@ -247,11 +272,13 @@ required prefix resolves empty (e.g. JAVA_HOME on gangan-mobile).
 
 **If `--stop-at-pr`:** report (child, worktree, branch, PR URL, gates, reviews —
 including a **Claude review status** field = one of "pending" / "approved (green)" /
-"changes requested (red)" derived from the `claude-review` check conclusion + the
-formal review state (see the reference's "Claude Review action" section), CodeRabbit
-status, and a **Copilot status** field = one of "not requested" /
-"requested, pending" / "clean" / "N/A (not enabled)" with any unresolved comment
-count, derived from the Copilot review-state query in the reference) and STOP.
+"changes requested (red)" / "N/A (not required)" (the last when `claude-review` is not
+in the repo's `merge.required_checks` — parallel to the Copilot "N/A (not enabled)"
+state) derived from the `claude-review` check conclusion + the formal review state (see
+the reference's "Claude Review action" section), CodeRabbit status, and a **Copilot
+status** field = one of "not requested" / "requested, pending" / "clean" /
+"N/A (not enabled)" with any unresolved comment count, derived from the Copilot
+review-state query in the reference) and STOP.
 Worktree stays intact. Status stays In Review. No `--auto` was armed (it is armed only
 in the merge phase), so nothing to disarm.
 
@@ -260,13 +287,16 @@ satisfied. Do NOT arm it at the start (an armed PR would merge the instant CI go
 green with findings still open).
 
 1. **Prose-gate resolution (BEFORE arming `--auto`):** drive these to clean first —
-   - **Claude Review action (PRIMARY gate)** → the `claude-review` required check
-     carries Claude's verdict on the LATEST head: red = REQUEST_CHANGES (or no
+   - **Claude Review action (config-conditional gate)** → The Claude Review gate
+     applies only when `claude-review` is listed in the repo's `merge.required_checks`;
+     when absent, skip it and note the skip. When it IS required, the `claude-review`
+     check carries Claude's verdict on the LATEST head: red = REQUEST_CHANGES (or no
      verdict — the check is fail-closed), green = APPROVE. On REQUEST_CHANGES, read
      the inline review comments + the formal review body, address them via the
      implementer, push, then wait for the re-review of the new head (every push
-     re-triggers it). Budget `CLAUDE_REVIEW_FIX_ROUNDS`. NEVER arm `--auto` while
-     `claude-review` is red.
+     re-triggers it). Budget `CLAUDE_REVIEW_FIX_ROUNDS`. While the gate applies, NEVER
+     arm `--auto` while `claude-review` is red; when it is skipped this constraint is
+     vacuous.
    - CodeRabbit `CHANGES_REQUESTED` (where review/approval is required) → address via
      implementer, push; each push dismisses stale approvals — always wait for review
      of the LATEST head. Budget `CODERABBIT_FIX_ROUNDS`.
@@ -362,8 +392,8 @@ that never posted) rather than rescheduling forever.
 - Subagent BLOCKED/NEEDS_CONTEXT (if your harness runs steps via subagents;
   otherwise treat an inline step's BLOCKED/NEEDS_CONTEXT failure the same way) →
   more context / stronger model / split / escalate; never silently retry.
-- Repo-specific caveats (emulator/simulator wedges, screenshot determinism, Paystack
-  rate limits, migration safety) → `toolchain.notes` + `gates` in that repo's
+- Repo-specific caveats (emulator/simulator wedges, screenshot determinism, third-party
+  API rate limits, migration safety) → `toolchain.notes` + `gates` in that repo's
   epic.yaml.
 - Epic body edits are NEVER needed for ticking — sub-issue closure updates
   `subIssuesSummary` automatically; the Project board is the human-facing view.

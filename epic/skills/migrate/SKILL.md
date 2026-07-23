@@ -1,14 +1,15 @@
 ---
 name: migrate
-description: Convert a legacy task-list epic to sub-issues + org Project
+description: Convert a legacy task-list epic to sub-issues + a project board
 ---
 
 The text after the skill name is the epic/child reference.
 
 You are migrating a legacy epic (task-list children in the issue body, old fat
 `epic-config`, `## Dependency model` prose) to the new model: native sub-issues,
-native blocked-by relations, configured-project tracking (epic-config `project`, default #2), slim `epic-config`. After
-migration the `/epic` driver speaks ONLY the new model.
+native blocked-by relations, configured-project tracking (epic-config `project`,
+resolved via the D4 order `epic-config.project` → `planning.project` → STOP), slim
+`epic-config`. After migration the `/epic` driver speaks ONLY the new model.
 
 Read `../epic/references/github-graphql.md` first — all mutations, IDs,
 the PR-mapping rule, and the `blockingIssueId` gotcha live there.
@@ -16,7 +17,7 @@ the PR-mapping rule, and the `blockingIssueId` gotcha live there.
 ## Arguments
 
 `<epic#>` required. `--repo owner/name` optional — defaults to the cwd repo's
-`nameWithOwner` (legacy epics live in working repos, e.g. gangan-api #278–#282).
+`nameWithOwner` (legacy epics live in working repos, e.g. a working repo's #101–#105).
 The epic issue is NOT moved; `epic-config.repo` records where it lives.
 
 ## Procedure
@@ -62,7 +63,7 @@ for the slim config (default: the repo the epic lives in).
 1. For each child: `addSubIssue` to the epic (skip if already a sub-issue);
    `reprioritizeSubIssue` to match the legacy priority order.
 2. For each confirmed dependency edge: `addBlockedBy` (skip if already present).
-3. Add epic + all children to the configured project (epic-config `project`, default #2) (`addProjectV2ItemById` is idempotent);
+3. Add epic + all children to the configured project (epic-config `project`, resolved via `epic-config.project` → `planning.project` → STOP) (`addProjectV2ItemById` is idempotent);
    set Status per the confirmed table; Priority only if the operator assigned any.
 4. Rewrite the epic body via `gh issue edit --body-file`. HARD ORDERING REQUIREMENT —
    the backup MUST exist before any destructive edit:
@@ -73,8 +74,9 @@ for the slim config (default: the repo the epic lives in).
      irrecoverably, so the order is non-negotiable.
    - ONLY THEN rewrite the body: replace the fat `epic-config` with the slim schema
      (`epic`, `repo`, `docs_repo`, `worktree_prefix`, `spec`, `runbook`, `custom_gates`, and optional `project`)
-     — when the epic tracks a NON-DEFAULT board, the slim config MUST carry `project: <n>` so future
-     `/epic` runs track the same project number;
+     — carry `project: <n>` in the slim config when the epic tracks a board whose
+     number is not the repo's `planning.project`, so future `/epic` runs resolve the
+     same project (D4 order: `epic-config.project` → `planning.project` → STOP);
    - DELETE the task-list section and the `## Dependency model` section (their data
      now lives in sub-issues/relations — leaving them would create dual sources of
      truth);
