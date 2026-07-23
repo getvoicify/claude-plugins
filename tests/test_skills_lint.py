@@ -443,11 +443,10 @@ def test_readme_has_smoke_checklist_section():
 # Task 7: forbidden-literal ratchet (design §D9, runbook §Children 1-2).
 #
 # Scope grows one file at a time as each is cleaned: the github-graphql
-# reference plus every file under epic/commands/ (child 1), AND the driver +
-# migrate SKILL.md files (child 2). create/SKILL.md and the README are still
-# out of scope here — create/SKILL.md is child 3's, the README is child 4's.
-# Keeping the scope to only-cleaned files is what lets the suite stay green on
-# main between merges.
+# reference plus every file under epic/commands/ (child 1), the driver +
+# migrate SKILL.md files (child 2), AND the create SKILL.md (child 3). The
+# README is still out of scope here — it is child 4's. Keeping the scope to
+# only-cleaned files is what lets the suite stay green on main between merges.
 #
 # Two forbidden classes:
 #  - `gangan`, `getvoicify` — owner/org slugs, matched CASE-INSENSITIVELY.
@@ -466,14 +465,15 @@ NODE_ID_SHAPE_RE = re.compile(r"PVT(?:_|SSF_|F_)")
 
 def forbidden_literal_scope_paths():
     """Files the ratchet covers so far: the github-graphql reference and every
-    file under epic/commands/ (child 1), plus the driver and migrate SKILL.md
-    files (child 2). Enumerated explicitly rather than globbing
-    epic/skills/**/SKILL.md so the still-dirty create/SKILL.md (child 3's) and
-    the README (child 4's) stay out of scope. Later children widen it."""
+    file under epic/commands/ (child 1), the driver and migrate SKILL.md files
+    (child 2), plus the create SKILL.md (child 3). Enumerated explicitly rather
+    than globbing epic/skills/**/SKILL.md so the still-dirty README (child 4's)
+    stays out of scope. Later children widen it."""
     paths = [GITHUB_GRAPHQL_REFERENCE]
     paths.extend(p for p in sorted(EPIC_COMMANDS_DIR.rglob("*")) if p.is_file())
     paths.append(SKILLS_ROOT / "epic" / "SKILL.md")
     paths.append(SKILLS_ROOT / "migrate" / "SKILL.md")
+    paths.append(SKILLS_ROOT / "create" / "SKILL.md")
     return paths
 
 
@@ -572,4 +572,48 @@ def test_driver_skill_carries_d5_conditional_gate_sentence():
     assert D5_CLAUDE_REVIEW_SENTENCE in normalized, (
         f"{path} must carry the D5 canonical config-conditional Claude-Review "
         f"sentence: {D5_CLAUDE_REVIEW_SENTENCE!r}"
+    )
+
+
+# Task 9: create skill planning seam (child 3, design §D3/D4/D7).
+#
+# create/SKILL.md must carry the canonical planning-seam sentence naming the
+# `planning:` config source for epic home + project, with the interactive
+# fallback. Whitespace-normalized and lowercased exactly like the config-lookup
+# and D5 lints (the haystack is lowercased — so the needle is lowercase too).
+# A single test on the create path only: epic/migrate use different planning
+# phrasing, so this is NOT parametrized over SKILL_NAMES (mirrors the D5 lint).
+
+CREATE_PLANNING_SENTENCE = (
+    "epic home and project come from `planning:` in the cwd repo's "
+    "`.agents/epic.yaml` (fallback `.claude/epic.yaml`); when absent, ask the "
+    "operator."
+)
+
+
+def test_create_skill_carries_planning_seam_sentence():
+    path = skill_md_path("create")
+    text = path.read_text(encoding="utf-8")
+    # The sentence hard-wraps in prose; normalize whitespace and lowercase the
+    # same way test_config_lookup_order_sentence_present does before matching.
+    normalized = " ".join(text.lower().split())
+    assert CREATE_PLANNING_SENTENCE in normalized, (
+        f"{path} must carry the canonical planning-seam sentence: "
+        f"{CREATE_PLANNING_SENTENCE!r}"
+    )
+
+
+def test_create_skill_prior_art_uses_docs_config_not_superpowers():
+    # D7: create's prior-art search must use the target repo's Layer-2 docs
+    # dirs (docs.spec_dir / docs.runbook_dir) instead of the hardcoded
+    # `docs/superpowers/`. The `spec_dir` token-presence half is only a floor
+    # (create already references docs.spec_dir); the load-bearing guard is that
+    # the hardcoded `docs/superpowers/` path is gone.
+    text = skill_md_path("create").read_text(encoding="utf-8")
+    assert "docs/superpowers" not in text, (
+        "create/SKILL.md prior-art search must not hardcode `docs/superpowers/` "
+        "(D7: use the target repo's docs.spec_dir / docs.runbook_dir dirs)"
+    )
+    assert "spec_dir" in text, (
+        "create/SKILL.md must reference the docs-config `spec_dir` for prior-art"
     )

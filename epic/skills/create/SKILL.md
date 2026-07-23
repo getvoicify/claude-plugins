@@ -6,9 +6,12 @@ description: Brainstorm a new epic into existence (spec, runbook, sub-issues, Pr
 You are running an epic-creation brainstorm. The input is a rough idea (from
 the request text after the skill name, or asked for if empty); the product is a fully materialized epic: a
 reviewed spec + runbook landed via a docs PR, an epic issue in the planning repo
-`getvoicify/gangan` with a slim `epic-config` block, child issues in their working
+with a slim `epic-config` block, child issues in their working
 repos linked as sub-issues with native blocked-by relations, and every item on
-the configured org project (epic-config `project`, default #2) with Status/Priority set.
+the configured org project (`epic-config.project`, else `planning.project`) with Status/Priority set.
+
+Epic home and project come from `planning:` in the cwd repo's `.agents/epic.yaml`
+(fallback `.claude/epic.yaml`); when absent, ask the operator.
 
 Read `../epic/references/github-graphql.md` before the materialize
 phase — it has every mutation, ID, and gotcha (`blockingIssueId`, not
@@ -23,11 +26,11 @@ created on GitHub until the operator approves the full breakdown in phase 4.
    harness supports structured questions; otherwise as numbered plain-text
    questions, waiting for the reply) about:
    the user/business problem, success criteria, hard constraints, deadline pressure,
-   and which repos are plausibly involved (gangan-api / gangan-mobile /
-   gangan-angular-workspace — multi-select).
+   and which repos are plausibly involved (your working repos — multi-select).
 2. Spawn read-only Explore subagents (if supported; otherwise explore each repo
    inline, sequentially) over each implicated repo to map the affected
-   surface: existing modules, prior art, related specs under `docs/superpowers/`,
+   surface: existing modules, prior art, related specs under the repo's docs
+   dirs (`docs.spec_dir` / `docs.runbook_dir` from its effective epic.yaml config),
    open issues/PRs touching the same area (`gh search`).
 3. Surface 2–3 distinct solution approaches with trade-offs. Present them; let the
    operator pick or blend. Challenge scope — actively propose what to CUT.
@@ -98,13 +101,14 @@ operator can override). Require explicit approval. Any edit → update and re-pr
 1. **Docs PR**: push the branch, `gh pr create` in `docs_repo` (conventional commit
    subject per that repo's standards); note the phase-3b stress-test outcome (rounds
    run, residual open questions if any) in the PR body. Record the PR URL.
-2. **Epic issue** in `getvoicify/gangan`: title `Epic: <name>`; body = a short
-   abstract, link to spec/runbook paths + docs PR, and the fenced `epic-config`:
+2. **Epic issue** in the planning repo (`planning.repo`): title `Epic: <name>`;
+   body = a short abstract, link to spec/runbook paths + docs PR, and the fenced
+   `epic-config`:
 
    ```yaml
    epic: <assigned after creation — edit the body to backfill>
-   repo: getvoicify/gangan
-   project: <org ProjectV2 number — omit to default to 2 (Gangan)>
+   repo: <owner>/<planning-repo>
+   project: <org ProjectV2 number — omit to fall back to `planning.project`>
    docs_repo: <owner/name>
    worktree_prefix: <kebab>
    spec: <docs.spec_dir>/<file>.md
@@ -119,7 +123,8 @@ operator can override). Require explicit approval. Any edit → update and re-pr
    - `addSubIssue` each to the epic (cross-repo works);
    - `reprioritizeSubIssue` to match the agreed drive order;
    - `addBlockedBy` per the dependency graph;
-   - add epic + every child to the configured project (epic-config `project`, default #2) (`addProjectV2ItemById`, idempotent),
+   - add epic + every child to the configured project (`epic-config.project`,
+     else `planning.project`) (`addProjectV2ItemById`, idempotent),
      set Status = Todo and the agreed Priority on each.
 4. **Verify** (trust-but-verify your own mutations): re-query the epic's `subIssues`
    + each child's `blockedBy` + `projectItems` and diff against the approved plan.
@@ -136,5 +141,5 @@ operator can override). Require explicit approval. Any edit → update and re-pr
   tolerate re-runs.
 - Child issues must be self-sufficient for a driver session that reads ONLY that
   child + spec + runbook (the `/epic` driver does not skim siblings).
-- Respect each repo's commit-message and PR conventions (e.g. gangan-api requires a
-  `[GAN-NNN]` ticket key).
+- Respect each repo's commit-message and PR conventions (e.g. a repo may require a
+  `[TICKET-123]` ticket key).
