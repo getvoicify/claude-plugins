@@ -8,7 +8,7 @@ the request text after the skill name, or asked for if empty); the product is a 
 reviewed spec + runbook landed via a docs PR, an epic issue in the planning repo
 with a slim `epic-config` block, child issues in their working
 repos linked as sub-issues with native blocked-by relations, and every item on
-the configured org project (`epic-config.project`, else `planning.project`) with Status/Priority set.
+the configured ProjectV2 (`epic-config.project`, else `planning.project`) with Status/Priority set.
 
 Epic home and project come from `planning:` in the cwd repo's `.agents/epic.yaml`
 (fallback `.claude/epic.yaml`); when absent, ask the operator.
@@ -108,7 +108,7 @@ operator can override). Require explicit approval. Any edit → update and re-pr
    ```yaml
    epic: <assigned after creation — edit the body to backfill>
    repo: <owner>/<planning-repo>
-   project: <org ProjectV2 number — omit to fall back to `planning.project`>
+   project: <ProjectV2 number — omit to fall back to `planning.project`>
    docs_repo: <owner/name>
    worktree_prefix: <kebab>
    spec: <docs.spec_dir>/<file>.md
