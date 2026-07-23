@@ -64,8 +64,8 @@ invocation loops the same per-child mechanics autonomously until the epic is don
    - `project` (int, optional) — ProjectV2 number for status tracking. When omitted,
      resolve it from Layer-2 `planning.project`; if that too is absent → STOP (no
      hardcoded default — back-compat is a one-line `planning.project` backfill in the
-     repo's epic.yaml). Whatever number resolves, the driver re-resolves projectId +
-     field & option ids at runtime (see github-graphql.md).
+     cwd checkout's epic.yaml). Whatever number resolves, the driver re-resolves
+     projectId + field & option ids at runtime (see github-graphql.md).
    - `docs_repo` (`owner/name`) — working repo where `spec`/`runbook` paths resolve.
    - `worktree_prefix` — must match `^[a-z0-9]+(-[a-z0-9]+)*$` (else STOP: "invalid
      worktree_prefix (must be kebab-case)"); guards every shell interpolation.

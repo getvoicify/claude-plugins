@@ -59,17 +59,21 @@ driver command.
 
 ## Migrating an existing install
 
-Epics whose bodies omit `project:` keep working the moment their planning repo's
-epic.yaml carries a `planning:` block — a one-line backfill, no re-migration of epic
-issues. The driver resolves the project number in D4 order (`epic-config.project` →
-`planning.project` → STOP), so add to the planning repo's `.agents/epic.yaml` (or the
-`.claude/epic.yaml` fallback):
+Epics whose bodies omit `project:` keep working the moment the epic.yaml carries a
+`planning:` block — a one-line backfill, no re-migration of epic issues. The driver
+resolves the project number in D4 order (`epic-config.project` → `planning.project` →
+STOP) from the epic.yaml of **the checkout you run `/epic` from** (the cwd checkout —
+at epic-load time no child is selected yet, so that checkout is the only Layer-2
+source), so add to that checkout's `.agents/epic.yaml` (or the `.claude/epic.yaml`
+fallback):
 
 ```yaml
 planning: {repo: <owner>/<planning-repo>, project: <n>}
 ```
 
-That backfill is the entire back-compat story.
+For a multi-repo epic, replicate the same `planning:` block into EACH involved repo's
+epic.yaml (just like the other Layer-2 config), so whichever checkout you drive from
+carries it. That backfill is the entire back-compat story.
 
 ## Installing
 
