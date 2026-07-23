@@ -203,14 +203,23 @@ def test_config_lookup_order_sentence_present(name):
 #   description, and a `skills` field that must be PRESENT (omission would
 #   be a vacuous pass), `./`-prefixed, and resolve (relative to `epic/`) to
 #   a directory containing all three skill dirs.
-# - Root `.agents/plugins/marketplace.json`: Codex repo catalog, top-level
-#   name "tom-plugins", at least one plugins[] entry with
-#   source.source == "local" and a `./`-prefixed path resolving to `epic/`.
+# - Root `.agents/plugins/marketplace.json`: Codex repo catalog. Its top-level
+#   `name` is pinned to "epic-plugins" alongside the Claude catalog
+#   (`.claude-plugin/marketplace.json`) — both must match MARKETPLACE_NAME and
+#   each other (see test_marketplace_catalog_names_are_epic_plugins). It must
+#   also carry at least one plugins[] entry with source.source == "local" and a
+#   `./`-prefixed path resolving to `epic/`.
 
 EPIC_DIR = REPO_ROOT / "epic"
 CLAUDE_MANIFEST_PATH = EPIC_DIR / ".claude-plugin" / "plugin.json"
 CODEX_MANIFEST_PATH = EPIC_DIR / ".codex-plugin" / "plugin.json"
 CODEX_CATALOG_PATH = REPO_ROOT / ".agents" / "plugins" / "marketplace.json"
+CLAUDE_CATALOG_PATH = REPO_ROOT / ".claude-plugin" / "marketplace.json"
+
+# The marketplace/catalog name is the same across BOTH repo catalogs (Claude's
+# `.claude-plugin/marketplace.json` and Codex's `.agents/plugins/marketplace.json`).
+# Locked at materialization approval (spec D10) — do not re-derive.
+MARKETPLACE_NAME = "epic-plugins"
 
 
 def load_json(path):
@@ -345,10 +354,24 @@ def test_release_workflow_git_add_stages_both_manifests():
         )
 
 
-def test_codex_catalog_name_is_tom_plugins():
-    catalog = load_json(CODEX_CATALOG_PATH)
-    assert catalog.get("name") == "tom-plugins", (
-        ".agents/plugins/marketplace.json top-level `name` must be 'tom-plugins'"
+def test_marketplace_catalog_names_are_epic_plugins():
+    # BOTH repo catalogs — Claude's `.claude-plugin/marketplace.json` and
+    # Codex's `.agents/plugins/marketplace.json` — must declare the same
+    # top-level `name`, equal to the locked MARKETPLACE_NAME constant. (Do
+    # not confuse `.claude-plugin/plugin.json`, the PLUGIN manifest whose
+    # name is "epic", with the root marketplace CATALOG.)
+    codex_catalog = load_json(CODEX_CATALOG_PATH)
+    claude_catalog = load_json(CLAUDE_CATALOG_PATH)
+    assert codex_catalog.get("name") == MARKETPLACE_NAME, (
+        f".agents/plugins/marketplace.json top-level `name` must be "
+        f"'{MARKETPLACE_NAME}', got {codex_catalog.get('name')!r}"
+    )
+    assert claude_catalog.get("name") == MARKETPLACE_NAME, (
+        f".claude-plugin/marketplace.json top-level `name` must be "
+        f"'{MARKETPLACE_NAME}', got {claude_catalog.get('name')!r}"
+    )
+    assert codex_catalog.get("name") == claude_catalog.get("name"), (
+        "both marketplace catalogs must declare the SAME top-level `name`"
     )
 
 
@@ -437,6 +460,123 @@ def test_readme_states_gh_cli_scopes():
 def test_readme_has_smoke_checklist_section():
     assert re.search(r"^## Smoke checklist[ \t]*$", read_epic_readme(), re.MULTILINE), (
         "epic/README.md must have a `## Smoke checklist` section"
+    )
+
+
+# Child 4: OSS hygiene — root LICENSE (spec D11) + distribution rename (D10).
+
+LICENSE_PATH = REPO_ROOT / "LICENSE"
+
+
+def test_root_license_present_and_mit():
+    assert LICENSE_PATH.is_file(), "root LICENSE file must exist (spec D11)"
+    lines = LICENSE_PATH.read_text(encoding="utf-8").splitlines()
+    # Guard the empty-file case explicitly — indexing lines[0] on an empty
+    # LICENSE would raise IndexError (an ugly error) instead of an actionable
+    # assertion failure.
+    assert lines, "root LICENSE must not be empty"
+    first_line = lines[0]
+    assert "MIT" in first_line, (
+        f"root LICENSE first line must name the MIT license, got {first_line!r}"
+    )
+
+
+# Child 4: README-scoped slug-aware forbidden-literal lint (spec D9, README
+# scope). The shared `find_forbidden_literals` bans `getvoicify` as a plain
+# substring, but the README legitimately links to the `getvoicify/claude-plugins`
+# source repo (7 slugs today). So the README gets its OWN slug-aware matcher —
+# scoped to the README only, so the already-clean owner-agnostic files never
+# gain permission to reintroduce a bare slug:
+#  - `gangan` (case-insensitive) and ProjectV2 node-ID shapes — banned outright.
+#  - `tom-plugins` — the OLD marketplace name, banned outright (catches prose
+#    leftovers the rename buckets miss).
+#  - `getvoicify` — banned EXCEPT inside the literal `getvoicify/claude-plugins`
+#    source slug (strip the slug, then any residual bare `getvoicify` is a leak).
+
+ALLOWED_SOURCE_SLUG = "getvoicify/claude-plugins"
+# Anchored on BOTH sides so ONLY the exact slug token is carved out — a
+# collision on either boundary must NOT be treated as allowed:
+#  - trailing: `getvoicify/claude-plugins-evil` (negative lookahead rejects a
+#    following word char or hyphen);
+#  - leading: `xgetvoicify/claude-plugins` or `my-getvoicify/claude-plugins`
+#    (negative lookbehind rejects a preceding word char or hyphen).
+# A surrounding space, `/` (as in a URL `github.com/getvoicify/claude-plugins`),
+# `.`, `)`, `#`, or start/end-of-line is NOT `[\w-]`, so the legitimate source
+# slug still matches and is carved out.
+ALLOWED_SOURCE_SLUG_RE = re.compile(
+    r"(?<![\w-])" + re.escape(ALLOWED_SOURCE_SLUG) + r"(?![\w-])"
+)
+
+
+def find_readme_forbidden_literals(text):
+    hits = []
+    lowered = text.lower()
+    if "gangan" in lowered:
+        hits.append("gangan")
+    if NODE_ID_SHAPE_RE.search(text):
+        hits.append("PVT node-id shape")
+    if "tom-plugins" in lowered:
+        hits.append("tom-plugins")
+    # Remove only the EXACT allowed source slug (anchored), then any remaining
+    # `getvoicify` is a bare owner reference or an impostor slug that must not
+    # appear.
+    residual = ALLOWED_SOURCE_SLUG_RE.sub("", lowered)
+    if "getvoicify" in residual:
+        hits.append("getvoicify (outside getvoicify/claude-plugins)")
+    return hits
+
+
+def test_readme_slug_aware_matcher_is_non_vacuous():
+    # The source slug is allowed on its own; a bare owner mention is not.
+    assert find_readme_forbidden_literals("git clone getvoicify/claude-plugins") == []
+    assert "getvoicify (outside getvoicify/claude-plugins)" in (
+        find_readme_forbidden_literals("owner getvoicify elsewhere")
+    )
+    # Collision impostors on EITHER side must still be flagged — the carve-out
+    # must match the EXACT slug token, not a longer slug that merely shares a
+    # boundary with it. TRAILING collision (`…-evil`/`…-fork`): an unanchored
+    # strip would delete the real-slug prefix and leave only `-evil`, hiding the
+    # bare owner. LEADING collision (`xgetvoicify/…`, `my-getvoicify/…`): a
+    # trailing-only anchor would strip the `getvoicify/claude-plugins` substring
+    # and leave `x`, hiding what is really a bare-getvoicify usage.
+    assert "getvoicify (outside getvoicify/claude-plugins)" in (
+        find_readme_forbidden_literals("git clone getvoicify/claude-plugins-evil")
+    )
+    assert "getvoicify (outside getvoicify/claude-plugins)" in (
+        find_readme_forbidden_literals("git clone getvoicify/claude-plugins-fork")
+    )
+    assert "getvoicify (outside getvoicify/claude-plugins)" in (
+        find_readme_forbidden_literals("git clone xgetvoicify/claude-plugins")
+    )
+    assert "getvoicify (outside getvoicify/claude-plugins)" in (
+        find_readme_forbidden_literals("git clone my-getvoicify/claude-plugins")
+    )
+    # The EXACT slug bounded by any non-word, non-hyphen delimiter on either
+    # side stays allowed — the anchors must not over-reject. Trailing: space,
+    # `/`, `.`, `)`, `#`, EOL. Leading: start-of-line, space, `/` (as in a URL
+    # `github.com/getvoicify/claude-plugins`), `(`.
+    for trailing in ("", " x", "/issues/9", ".git", ")", "#9"):
+        assert (
+            find_readme_forbidden_literals(f"getvoicify/claude-plugins{trailing}") == []
+        ), f"exact slug with trailing {trailing!r} should be allowed"
+    for leading in ("", "git clone ", "github.com/", "("):
+        assert (
+            find_readme_forbidden_literals(f"{leading}getvoicify/claude-plugins") == []
+        ), f"exact slug with leading {leading!r} should be allowed"
+    # gangan, the old marketplace name, and node-ID shapes are banned outright.
+    assert "gangan" in find_readme_forbidden_literals("gangan-api done")
+    assert "tom-plugins" in find_readme_forbidden_literals("claude plugin install epic@tom-plugins")
+    assert "PVT node-id shape" in find_readme_forbidden_literals("id: PVT_kwDOxxxx")
+    assert "PVT node-id shape" in find_readme_forbidden_literals("statusFieldId: PVTSSF_xxxx")
+
+
+def test_readme_has_no_forbidden_literals():
+    hits = find_readme_forbidden_literals(read_epic_readme())
+    assert not hits, (
+        f"epic/README.md: forbidden literal(s) {sorted(set(hits))} — the README "
+        f"must be owner-agnostic (only the `{ALLOWED_SOURCE_SLUG}` source slug is "
+        f"allowed), carry no `gangan`, no `tom-plugins`, and no ProjectV2 node-ID "
+        f"shapes"
     )
 
 

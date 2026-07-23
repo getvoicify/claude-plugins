@@ -1,12 +1,12 @@
 {
-  "name": "tom-plugins",
+  "name": "epic-plugins",
   "interface": {
-    "displayName": "Tom's Plugins"
+    "displayName": "Epic Plugins"
   },
   "plugins": [
     {
       "name": "epic",
-      "description": "Unified GitHub epic driver: drive epics via sub-issues + org ProjectV2, brainstorm new epics into existence, migrate legacy task-list epics",
+      "description": "Unified GitHub epic driver: drive epics via sub-issues + ProjectV2, brainstorm new epics into existence, migrate legacy task-list epics",
       "source": {
         "source": "local",
         "path": "./epic"

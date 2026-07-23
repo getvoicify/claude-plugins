@@ -1,5 +1,5 @@
 ---
-description: Convert a legacy task-list epic to sub-issues + org Project
+description: Convert a legacy task-list epic to sub-issues + project board
 argument-hint: "<epic#> [--repo owner/name]"
 ---
 
