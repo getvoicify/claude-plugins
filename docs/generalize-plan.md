@@ -240,9 +240,11 @@ agent-agnostic smoke child: caveat-class fixes inline, anything larger spins
 out).
 
 **Recipe.**
-1. Preconditions: `gh` authenticated with `repo, project, read:org` **plus
-   `delete_repo`** (for teardown; `gh auth refresh -s delete_repo`); the
-   installed epic plugin updated to include children 1–4 — remove the old
+1. Preconditions: `gh` authenticated with `repo, project, read:org` for the
+   verification legs; the teardown step additionally needs `delete_repo`
+   (`gh auth refresh -s delete_repo`) — grant it only when you intend to run
+   teardown, not to execute legs A–D. The installed epic plugin updated to
+   include children 1–4 — remove the old
    `tom-plugins` marketplace registration, then re-add under the post-rename
    name using the exact commands from the README migration paragraph child 4
    wrote — so `/epic` runs the generalized skill, not a stale cache (the

@@ -168,9 +168,9 @@ consume the marketplace name — Kimi, OpenCode, and Cursor install via the
 skills-dir copy from a clone (URL unchanged), so their install paths are
 name-independent.
 
-**Decision record:** at materialization approval this shortlist is replaced by
-the chosen name, recorded here AND in the rename child's issue body — a fresh
-driver session must never have to infer the name from a recommendation.
+**Decision record:** the chosen name is recorded above (locked at
+materialization approval) AND restated in the rename child's issue body — a
+fresh driver session must never have to infer the name from a recommendation.
 
 `epic/.claude-plugin/plugin.json` author becomes the neutral project identity
 (final string decided in the rename child alongside the marketplace name).
