@@ -440,7 +440,7 @@ def test_readme_has_smoke_checklist_section():
     )
 
 
-# Task 7: forbidden-literal ratchet (design §D9, runbook §Children 1-2).
+# Task 7: forbidden-literal ratchet (design §D9, runbook §Children 1-3).
 #
 # Scope grows one file at a time as each is cleaned: the github-graphql
 # reference plus every file under epic/commands/ (child 1), the driver +
@@ -609,7 +609,7 @@ def test_create_skill_prior_art_uses_docs_config_not_superpowers():
     # `docs/superpowers/`. The `spec_dir` token-presence half is only a floor
     # (create already references docs.spec_dir); the load-bearing guard is that
     # the hardcoded `docs/superpowers/` path is gone.
-    text = skill_md_path("create").read_text(encoding="utf-8")
+    text = skill_md_path("create").read_text(encoding="utf-8").lower()
     assert "docs/superpowers" not in text, (
         "create/SKILL.md prior-art search must not hardcode `docs/superpowers/` "
         "(D7: use the target repo's docs.spec_dir / docs.runbook_dir dirs)"
