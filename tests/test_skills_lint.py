@@ -486,6 +486,12 @@ def test_root_license_present_and_mit():
 #    source slug (strip the slug, then any residual bare `getvoicify` is a leak).
 
 ALLOWED_SOURCE_SLUG = "getvoicify/claude-plugins"
+# Anchored so ONLY the exact slug is carved out — a longer prefix-collision
+# like `getvoicify/claude-plugins-evil` must NOT be treated as allowed. The
+# negative lookahead rejects a trailing word char or hyphen (so `-evil`,
+# `-fork`, `foo` don't match), while a following space, `/`, `.`, `)`, `#`, or
+# EOL still counts as the legitimate source slug.
+ALLOWED_SOURCE_SLUG_RE = re.compile(re.escape(ALLOWED_SOURCE_SLUG) + r"(?![\w-])")
 
 
 def find_readme_forbidden_literals(text):
@@ -497,9 +503,10 @@ def find_readme_forbidden_literals(text):
         hits.append("PVT node-id shape")
     if "tom-plugins" in lowered:
         hits.append("tom-plugins")
-    # Remove the allowed source slug, then any remaining `getvoicify` is a
-    # bare owner reference that must not appear.
-    residual = lowered.replace(ALLOWED_SOURCE_SLUG, "")
+    # Remove only the EXACT allowed source slug (anchored), then any remaining
+    # `getvoicify` is a bare owner reference or an impostor slug that must not
+    # appear.
+    residual = ALLOWED_SOURCE_SLUG_RE.sub("", lowered)
     if "getvoicify" in residual:
         hits.append("getvoicify (outside getvoicify/claude-plugins)")
     return hits
@@ -511,6 +518,22 @@ def test_readme_slug_aware_matcher_is_non_vacuous():
     assert "getvoicify (outside getvoicify/claude-plugins)" in (
         find_readme_forbidden_literals("owner getvoicify elsewhere")
     )
+    # Impostor slugs that merely PREFIX-COLLIDE with the real one must still be
+    # flagged — an UNANCHORED strip would delete the real-slug prefix and leave
+    # only `-evil`/`-fork`, hiding the bare owner. The carve-out must match the
+    # EXACT slug, not any longer slug that starts with it.
+    assert "getvoicify (outside getvoicify/claude-plugins)" in (
+        find_readme_forbidden_literals("git clone getvoicify/claude-plugins-evil")
+    )
+    assert "getvoicify (outside getvoicify/claude-plugins)" in (
+        find_readme_forbidden_literals("git clone getvoicify/claude-plugins-fork")
+    )
+    # The EXACT slug followed by any non-word, non-hyphen delimiter (space, `/`,
+    # `.`, `)`, `#`, EOL, …) stays allowed — the anchor must not over-reject.
+    for trailing in ("", " x", "/issues/9", ".git", ")", "#9"):
+        assert (
+            find_readme_forbidden_literals(f"getvoicify/claude-plugins{trailing}") == []
+        ), f"exact slug with trailing {trailing!r} should be allowed"
     # gangan, the old marketplace name, and node-ID shapes are banned outright.
     assert "gangan" in find_readme_forbidden_literals("gangan-api done")
     assert "tom-plugins" in find_readme_forbidden_literals("claude plugin install epic@tom-plugins")
