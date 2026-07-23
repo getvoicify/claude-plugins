@@ -1,5 +1,5 @@
 ---
-description: Drive a GitHub epic (sub-issues + org Project) one child at a time
+description: Drive a GitHub epic (sub-issues + project board) one child at a time
 argument-hint: "<epic#> [status | next | run | <child#>] [--stop-at-pr] [--sweep]"
 ---
 

@@ -1,13 +1,13 @@
 {
-  "name": "tom-plugins",
+  "name": "epic-plugins",
   "owner": {
-    "name": "Tom (verygreenboi)"
+    "name": "Epic Plugins"
   },
   "plugins": [
     {
       "name": "epic",
       "source": "./epic",
-      "description": "Unified GitHub epic driver: drive epics via sub-issues + org ProjectV2, brainstorm new epics, migrate legacy task-list epics"
+      "description": "Unified GitHub epic driver: drive epics via sub-issues + ProjectV2, brainstorm new epics, migrate legacy task-list epics"
     }
   ]
 }

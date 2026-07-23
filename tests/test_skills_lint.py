@@ -211,6 +211,12 @@ EPIC_DIR = REPO_ROOT / "epic"
 CLAUDE_MANIFEST_PATH = EPIC_DIR / ".claude-plugin" / "plugin.json"
 CODEX_MANIFEST_PATH = EPIC_DIR / ".codex-plugin" / "plugin.json"
 CODEX_CATALOG_PATH = REPO_ROOT / ".agents" / "plugins" / "marketplace.json"
+CLAUDE_CATALOG_PATH = REPO_ROOT / ".claude-plugin" / "marketplace.json"
+
+# The marketplace/catalog name is the same across BOTH repo catalogs (Claude's
+# `.claude-plugin/marketplace.json` and Codex's `.agents/plugins/marketplace.json`).
+# Locked at materialization approval (spec D10) — do not re-derive.
+MARKETPLACE_NAME = "epic-plugins"
 
 
 def load_json(path):
@@ -345,10 +351,24 @@ def test_release_workflow_git_add_stages_both_manifests():
         )
 
 
-def test_codex_catalog_name_is_tom_plugins():
-    catalog = load_json(CODEX_CATALOG_PATH)
-    assert catalog.get("name") == "tom-plugins", (
-        ".agents/plugins/marketplace.json top-level `name` must be 'tom-plugins'"
+def test_marketplace_catalog_names_are_epic_plugins():
+    # BOTH repo catalogs — Claude's `.claude-plugin/marketplace.json` and
+    # Codex's `.agents/plugins/marketplace.json` — must declare the same
+    # top-level `name`, equal to the locked MARKETPLACE_NAME constant. (Do
+    # not confuse `.claude-plugin/plugin.json`, the PLUGIN manifest whose
+    # name is "epic", with the root marketplace CATALOG.)
+    codex_catalog = load_json(CODEX_CATALOG_PATH)
+    claude_catalog = load_json(CLAUDE_CATALOG_PATH)
+    assert codex_catalog.get("name") == MARKETPLACE_NAME, (
+        f".agents/plugins/marketplace.json top-level `name` must be "
+        f"'{MARKETPLACE_NAME}', got {codex_catalog.get('name')!r}"
+    )
+    assert claude_catalog.get("name") == MARKETPLACE_NAME, (
+        f".claude-plugin/marketplace.json top-level `name` must be "
+        f"'{MARKETPLACE_NAME}', got {claude_catalog.get('name')!r}"
+    )
+    assert codex_catalog.get("name") == claude_catalog.get("name"), (
+        "both marketplace catalogs must declare the SAME top-level `name`"
     )
 
 
@@ -437,6 +457,74 @@ def test_readme_states_gh_cli_scopes():
 def test_readme_has_smoke_checklist_section():
     assert re.search(r"^## Smoke checklist[ \t]*$", read_epic_readme(), re.MULTILINE), (
         "epic/README.md must have a `## Smoke checklist` section"
+    )
+
+
+# Child 4: OSS hygiene — root LICENSE (spec D11) + distribution rename (D10).
+
+LICENSE_PATH = REPO_ROOT / "LICENSE"
+
+
+def test_root_license_present_and_mit():
+    assert LICENSE_PATH.is_file(), "root LICENSE file must exist (spec D11)"
+    first_line = LICENSE_PATH.read_text(encoding="utf-8").splitlines()[0]
+    assert "MIT" in first_line, (
+        f"root LICENSE first line must name the MIT license, got {first_line!r}"
+    )
+
+
+# Child 4: README-scoped slug-aware forbidden-literal lint (spec D9, README
+# scope). The shared `find_forbidden_literals` bans `getvoicify` as a plain
+# substring, but the README legitimately links to the `getvoicify/claude-plugins`
+# source repo (7 slugs today). So the README gets its OWN slug-aware matcher —
+# scoped to the README only, so the already-clean owner-agnostic files never
+# gain permission to reintroduce a bare slug:
+#  - `gangan` (case-insensitive) and ProjectV2 node-ID shapes — banned outright.
+#  - `tom-plugins` — the OLD marketplace name, banned outright (catches prose
+#    leftovers the rename buckets miss).
+#  - `getvoicify` — banned EXCEPT inside the literal `getvoicify/claude-plugins`
+#    source slug (strip the slug, then any residual bare `getvoicify` is a leak).
+
+ALLOWED_SOURCE_SLUG = "getvoicify/claude-plugins"
+
+
+def find_readme_forbidden_literals(text):
+    hits = []
+    lowered = text.lower()
+    if "gangan" in lowered:
+        hits.append("gangan")
+    if NODE_ID_SHAPE_RE.search(text):
+        hits.append("PVT node-id shape")
+    if "tom-plugins" in lowered:
+        hits.append("tom-plugins")
+    # Remove the allowed source slug, then any remaining `getvoicify` is a
+    # bare owner reference that must not appear.
+    residual = lowered.replace(ALLOWED_SOURCE_SLUG, "")
+    if "getvoicify" in residual:
+        hits.append("getvoicify (outside getvoicify/claude-plugins)")
+    return hits
+
+
+def test_readme_slug_aware_matcher_is_non_vacuous():
+    # The source slug is allowed on its own; a bare owner mention is not.
+    assert find_readme_forbidden_literals("git clone getvoicify/claude-plugins") == []
+    assert "getvoicify (outside getvoicify/claude-plugins)" in (
+        find_readme_forbidden_literals("owner getvoicify elsewhere")
+    )
+    # gangan, the old marketplace name, and node-ID shapes are banned outright.
+    assert "gangan" in find_readme_forbidden_literals("gangan-api done")
+    assert "tom-plugins" in find_readme_forbidden_literals("claude plugin install epic@tom-plugins")
+    assert "PVT node-id shape" in find_readme_forbidden_literals("id: PVT_kwDOxxxx")
+    assert "PVT node-id shape" in find_readme_forbidden_literals("statusFieldId: PVTSSF_xxxx")
+
+
+def test_readme_has_no_forbidden_literals():
+    hits = find_readme_forbidden_literals(read_epic_readme())
+    assert not hits, (
+        f"epic/README.md: forbidden literal(s) {sorted(set(hits))} — the README "
+        f"must be owner-agnostic (only the `{ALLOWED_SOURCE_SLUG}` source slug is "
+        f"allowed), carry no `gangan`, no `tom-plugins`, and no ProjectV2 node-ID "
+        f"shapes"
     )
 
 

@@ -47,8 +47,7 @@ files are thin shims that read and follow the matching SKILL.md, so the familiar
 - `gh` CLI authenticated with scopes `repo, project, read:org`.
 - Local checkouts of the working repos as siblings (the driver resolves a child's
   checkout by matching `origin` URLs in the cwd's parent directory).
-- Each working repo carries `.agents/epic.yaml`, or the `.claude/epic.yaml` fallback
-  (gangan-api, gangan-mobile, gangan-angular-workspace: done 2026-06-10).
+- Each working repo carries `.agents/epic.yaml`, or the `.claude/epic.yaml` fallback.
 
 ## Defaults
 
@@ -74,6 +73,33 @@ planning: {repo: <owner>/<planning-repo>, project: <n>}
 For a multi-repo epic, replicate the same `planning:` block into EACH involved repo's
 epic.yaml (just like the other Layer-2 config), so whichever checkout you drive from
 carries it. That backfill is the entire back-compat story.
+
+### Re-adding the marketplace after the rename
+
+The marketplace catalog is now **`epic-plugins`** (it was previously registered
+under an older name). A previously-added registration keeps serving the old
+cached catalog, so **remove that stale registration first**, then re-add from
+the source repo — the re-add resolves under `epic-plugins`:
+
+Claude Code:
+
+```sh
+claude plugin marketplace list                       # find the old registration
+claude plugin marketplace remove <old-marketplace>   # drop the stale catalog
+claude plugin marketplace add getvoicify/claude-plugins
+claude plugin install epic@epic-plugins
+```
+
+Codex CLI:
+
+```sh
+codex plugin marketplace list
+codex plugin marketplace remove <old-marketplace>
+codex plugin marketplace add getvoicify/claude-plugins
+codex plugin add epic@epic-plugins
+```
+
+Fresh installs skip this — follow [Installing](#installing) directly.
 
 ## Installing
 
@@ -108,7 +134,7 @@ the plugin:
 
 ```sh
 claude plugin marketplace add getvoicify/claude-plugins   # or /path/to/checkout
-claude plugin install epic@tom-plugins
+claude plugin install epic@epic-plugins
 ```
 
 Skills are auto-discovered from the plugin's `skills/` dir; the familiar
@@ -125,7 +151,7 @@ without these the turn budget burns silently.
 
 ### Codex CLI
 
-Register this repo's plugin catalog — this adds the `tom-plugins` marketplace
+Register this repo's plugin catalog — this adds the `epic-plugins` marketplace
 from the repo's `.agents/plugins/marketplace.json`:
 
 ```sh
@@ -136,13 +162,13 @@ Then install the `epic` plugin non-interactively (available since codex-cli
 0.145.0):
 
 ```sh
-codex plugin add epic@tom-plugins
+codex plugin add epic@epic-plugins
 ```
 
 If the marketplace was added previously, refresh it first:
 
 ```sh
-codex plugin marketplace upgrade tom-plugins
+codex plugin marketplace upgrade epic-plugins
 ```
 
 Reason: a previously-added marketplace serves a stale cached snapshot
@@ -154,7 +180,7 @@ alternatives to the non-interactive install.
 Pickup: start a new session after install (CLI) / restart the desktop app for
 repo-catalog pickup.
 
-Verified with codex-cli 0.145.0 (2026-07-22): marketplace resolved via `.agents/plugins/marketplace.json`, plugin installed to `~/.codex/plugins/cache/tom-plugins/epic/<version>`, and `epic:create` / `epic:epic` / `epic:migrate` all listed as available skills.
+Verified with codex-cli 0.145.0 (2026-07-22): marketplace resolved via `.agents/plugins/marketplace.json`, plugin installed to `~/.codex/plugins/cache/epic-plugins/epic/<version>`, and `epic:create` / `epic:epic` / `epic:migrate` all listed as available skills.
 
 Invocation: explicit — run `/skills` or type `$` to mention a skill in your
 prompt (e.g. `$epic:create a rate-limiter epic`, `$epic:epic 9 status`);
