@@ -17,7 +17,7 @@ the PR-mapping rule, and the `blockingIssueId` gotcha live there.
 ## Arguments
 
 `<epic#>` required. `--repo owner/name` optional — defaults to the cwd repo's
-`nameWithOwner` (legacy epics live in working repos, e.g. a working repo, #101–#105).
+`nameWithOwner` (legacy epics live in working repos, e.g. a working repo's #101–#105).
 The epic issue is NOT moved; `epic-config.repo` records where it lives.
 
 ## Procedure
