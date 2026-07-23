@@ -177,9 +177,14 @@ Copy `epic/skills/*` into one of Cursor's skills directories:
 Invocation: by default skills are applied automatically when the agent
 determines they are relevant; they can also be manually invoked by typing
 `/` in Agent chat and searching for the skill name — the skill name is the
-dir name, so `/create`, `/epic`, `/migrate` (e.g. `/epic 9 status`,
-`/create a rate-limiter epic`; the docs pin only the `/skill-name` form —
-trailing-argument form to be confirmed in the cross-agent smoke).
+dir name, so `/create`, `/epic`, `/migrate`, with trailing arguments
+(e.g. `/epic 9 status`, `/create a rate-limiter epic`).
+
+Headless note: plain `cursor-agent -p` auto-rejects ALL tool calls (despite
+the help text's claim of full tool access) — the gh-dependent legs (`status`,
+`migrate`) need `--force` (full auto-approval; `--auto-review` exists as an
+untested middle option). For headless smoke runs use
+`-p --output-format text --trust` plus `--force`.
 
 ### OpenCode
 
@@ -197,14 +202,22 @@ your prompt: ask `Use the epic skill: status for epic #9`,
 `Use the create skill: a rate-limiter epic`, or
 `Use the migrate skill: convert epic #9`.
 
+In a scratch project with no `origin` remote, name the repo explicitly in
+migrate prompts — the skill's `--repo` default resolves from the cwd
+repo's origin (e.g. `Use the migrate skill: --repo getvoicify/claude-plugins
+epic 9`). Status has no `--repo` argument and works remote-less via
+org-level search.
+
 ## Smoke checklist
 
 The manual verification script for a release across all five agents.
 (Executing it is a separate task — this section is the script.)
 
-Last smoke: 2026-07-22, verified with claude 2.1.217, codex-cli 0.145.0,
-kimi 0.29.0. OpenCode and Cursor CLI legs pending (auth/install — see
-issue #16). The gangan-default-epic-home probe order (skills try
+Last smoke: all five agents verified 2026-07-22/23 — claude 2.1.217,
+codex-cli 0.145.0, kimi 0.29.0, opencode 1.17.13
+(`-m opencode/deepseek-v4-flash-free` — the configured default model was
+broken on the smoke machine, hence the explicit flag), cursor-agent
+2026.07.20. The gangan-default-epic-home probe order (skills try
 getvoicify/gangan then the cwd repo) is by design.
 
 **Preconditions**
