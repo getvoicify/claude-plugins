@@ -279,10 +279,12 @@ out).
      THIS repo's checkout; the setup deliberately interleaves two directories
      (scratch clone for authoring/legs, this checkout for the epic.yaml
      mirror and template), so keep track of which one you are in.
-3. Legs — A–C run FROM INSIDE the scratch clone (D1 derives owner from the
-   epic-config/cwd origin; running them from this repo would probe the wrong
-   owner). Claude Code only — cross-agent parity was proven by the previous
-   epic; this smoke tests org-independence, not agent-independence:
+3. Legs — the stranger-context legs A–C run FROM INSIDE the scratch clone
+   (D1 derives owner from the epic-config/cwd origin; running them from this
+   repo would probe the wrong owner); the back-compat regression leg D runs
+   from THIS repo's checkout (stated again on the leg itself). Claude Code
+   only — cross-agent parity was proven by the previous epic; this smoke tests
+   org-independence, not agent-independence:
    - **A**: `/epic <scratch-epic#> status` — proves D1 owner derivation +
      D2 `user(login:)` fallback + D4 `planning.project` fallback end-to-end.
    - **B**: create dry-run — before aborting at phase 1, ask the session to
