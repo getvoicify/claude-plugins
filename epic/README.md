@@ -264,6 +264,31 @@ codex-cli 0.145.0, kimi 0.29.0, opencode 1.17.13 (run as
 model was broken on the smoke machine, hence the explicit flag), cursor-agent
 2026.07.20.
 
+Cross-org smoke (org-independence): passed 2026-07-23 —
+`epic-plugins/epic@0.13.0`, Claude Code 2.1.218 only. This run varies the
+*owner* axis, not the agent axis (cross-agent parity was already proven by the
+five-agent record above): a throwaway user-account scratch context — a
+scratch repo plus a user-level ProjectV2 under a personal user account (a
+user, not an org) — created solely for this run and deleted afterward. Four
+legs, all PASS, zero mutations:
+
+- **A** — `/epic <n> status`: owner derived from the owner half of
+  `epic-config.repo`; ProjectV2 resolved via `organization(login:)`
+  NOT_FOUND → `user(login:)`; with `epic-config.project` omitted, the
+  no-default D4 fallback picked up `planning.project`.
+- **B** — `/epic:create` (dry-run): epic home + project stated from the
+  `planning:` seam in the cwd repo's `.agents/epic.yaml` without asking the
+  operator (D3); the project *number* is the uniquely seam-sourced datum
+  (the home repo is confounded by cwd == `planning.repo`).
+- **C** — `/epic:migrate`: legacy read+parse with owner derived from the
+  cwd/config; halted at the confirmation gate with no mutation.
+- **D** — `/epic 9 status` (back-compat regression): the repo's own closed
+  epic #9 still resolved its project via the `.claude/epic.yaml`
+  `planning.project` backfill.
+
+Zero-mutation evidence: the real epic's comment count was unchanged and the
+scratch resources gained no items or sub-issues.
+
 **Preconditions**
 
 - [ ] All five CLIs (Claude Code, Codex CLI, Kimi Code, Cursor CLI, OpenCode)

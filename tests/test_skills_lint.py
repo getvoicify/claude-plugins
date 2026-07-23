@@ -743,6 +743,22 @@ def test_create_skill_carries_planning_seam_sentence():
     )
 
 
+def test_readme_smoke_section_records_cross_org_user_account_smoke():
+    # Child 31: the cross-org (user-account) behavioral smoke must be logged as
+    # a dated record INSIDE the `## Smoke checklist` section — a distinct record
+    # from the five-agent (agent-independence) one, varying the owner axis.
+    smoke = extract_h2_section(read_epic_readme(), "Smoke checklist")
+    assert smoke is not None, (
+        "epic/README.md must have a `## Smoke checklist` section"
+    )
+    normalized = " ".join(smoke.lower().split())
+    for needle in ("cross-org", "user-account"):
+        assert needle in normalized, (
+            f"epic/README.md `## Smoke checklist` must record the cross-org "
+            f"user-account smoke (missing {needle!r})"
+        )
+
+
 def test_create_skill_prior_art_uses_docs_config_not_superpowers():
     # D7: create's prior-art search must use the target repo's Layer-2 docs
     # dirs (docs.spec_dir / docs.runbook_dir) instead of the hardcoded
