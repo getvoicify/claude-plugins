@@ -264,7 +264,7 @@ codex-cli 0.145.0, kimi 0.29.0, opencode 1.17.13 (run as
 model was broken on the smoke machine, hence the explicit flag), cursor-agent
 2026.07.20.
 
-Cross-org smoke (org-independence): passed 2026-07-23 —
+Cross-org / user-account smoke (org-independence): passed 2026-07-23 —
 `epic-plugins/epic@0.13.0`, Claude Code 2.1.218 only. This run varies the
 *owner* axis, not the agent axis (cross-agent parity was already proven by the
 five-agent record above): a throwaway user-account scratch context — a
