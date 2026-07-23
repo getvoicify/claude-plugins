@@ -299,25 +299,27 @@ verify it once against `statusCheckRollup` if a repo renames the job.
 
 ## Issue types
 
-Issue types are owner-derived (org → user dual, same NOT_FOUND fallback as ID
-resolution). An org may define Task / Bug / Feature (+ Epic once created — Epic
-requires `admin:org` scope or org Settings → Planning). Tag with:
+Issue types are **org-only** — the `issueTypes` connection exists on
+`Organization`, and the GraphQL `User` type has no `issueTypes` field, so there
+is no user-owner form of this probe (unlike ID resolution, there is no org→user
+fallback here). An org may define Task / Bug / Feature (+ Epic once created —
+Epic requires `admin:org` scope or org Settings → Planning). Tag with:
 
 ```graphql
 mutation { updateIssueIssueType(input: {issueId: "<node id>", issueTypeId: "<type id>"}) { issue { number } } }
 ```
 
-List type ids via the `organization(login:)` form:
+List type ids via the `organization(login:)` form only:
 
 ```graphql
 { organization(login:"<owner>") { issueTypes(first:10){ nodes { id name } } } }
 ```
 
-If this returns `errors[].type == "NOT_FOUND"` parsed from the response body, the
-owner is a **user account**. User accounts have **no org issue types**, so that
-path takes the fallback and yields no types **without error** — skip type-tagging
-silently (it is cosmetic). Likewise, if the Epic type doesn't exist yet, skip
-tagging silently.
+If the owner is a **user account** rather than an org, it simply has no issue
+types — do NOT attempt a user-owner variant of this query (there is none; asking
+`issueTypes` on a `User` is a schema/validation error the error table above
+classifies as permanent, not a fallback). Skip type-tagging silently (it is
+cosmetic). Likewise, if the Epic type doesn't exist yet, skip tagging silently.
 
 ## Required token scopes
 

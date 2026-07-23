@@ -518,3 +518,25 @@ def test_reference_documents_org_to_user_fallback():
         "github-graphql.md must document the organization→user(login:) fallback "
         "recipe (org-form NOT_FOUND falls back to a user login)"
     )
+
+
+def test_issue_types_section_is_org_only_no_user_fallback():
+    # `User` has NO `issueTypes` field: a `user(login:){issueTypes}` query is an
+    # `undefinedField` VALIDATION error, which the error-handling table
+    # classifies as permanent → PARK. So the issue-type probe must NOT reuse the
+    # org→user NOT_FOUND fallback framing (that dual recipe is correct for
+    # ID/review probes, but a trap here). Issue types are org-only: a user owner
+    # simply has none → skip tagging silently.
+    text = GITHUB_GRAPHQL_REFERENCE.read_text(encoding="utf-8")
+    section = extract_h2_section(text, "Issue types")
+    assert section is not None, (
+        "github-graphql.md must have an `## Issue types` section"
+    )
+    assert "user(login:" not in section, (
+        "issue types are org-only — the section must not instruct a "
+        "`user(login:` issue-types query (User has no `issueTypes` field)"
+    )
+    assert "NOT_FOUND" not in section, (
+        "issue types are org-only — drop the org→user NOT_FOUND fallback "
+        "framing from the issue-type probe; a user owner simply has no types"
+    )
