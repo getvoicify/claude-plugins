@@ -494,12 +494,18 @@ def test_root_license_present_and_mit():
 #    source slug (strip the slug, then any residual bare `getvoicify` is a leak).
 
 ALLOWED_SOURCE_SLUG = "getvoicify/claude-plugins"
-# Anchored so ONLY the exact slug is carved out — a longer prefix-collision
-# like `getvoicify/claude-plugins-evil` must NOT be treated as allowed. The
-# negative lookahead rejects a trailing word char or hyphen (so `-evil`,
-# `-fork`, `foo` don't match), while a following space, `/`, `.`, `)`, `#`, or
-# EOL still counts as the legitimate source slug.
-ALLOWED_SOURCE_SLUG_RE = re.compile(re.escape(ALLOWED_SOURCE_SLUG) + r"(?![\w-])")
+# Anchored on BOTH sides so ONLY the exact slug token is carved out — a
+# collision on either boundary must NOT be treated as allowed:
+#  - trailing: `getvoicify/claude-plugins-evil` (negative lookahead rejects a
+#    following word char or hyphen);
+#  - leading: `xgetvoicify/claude-plugins` or `my-getvoicify/claude-plugins`
+#    (negative lookbehind rejects a preceding word char or hyphen).
+# A surrounding space, `/` (as in a URL `github.com/getvoicify/claude-plugins`),
+# `.`, `)`, `#`, or start/end-of-line is NOT `[\w-]`, so the legitimate source
+# slug still matches and is carved out.
+ALLOWED_SOURCE_SLUG_RE = re.compile(
+    r"(?<![\w-])" + re.escape(ALLOWED_SOURCE_SLUG) + r"(?![\w-])"
+)
 
 
 def find_readme_forbidden_literals(text):
@@ -526,22 +532,37 @@ def test_readme_slug_aware_matcher_is_non_vacuous():
     assert "getvoicify (outside getvoicify/claude-plugins)" in (
         find_readme_forbidden_literals("owner getvoicify elsewhere")
     )
-    # Impostor slugs that merely PREFIX-COLLIDE with the real one must still be
-    # flagged — an UNANCHORED strip would delete the real-slug prefix and leave
-    # only `-evil`/`-fork`, hiding the bare owner. The carve-out must match the
-    # EXACT slug, not any longer slug that starts with it.
+    # Collision impostors on EITHER side must still be flagged — the carve-out
+    # must match the EXACT slug token, not a longer slug that merely shares a
+    # boundary with it. TRAILING collision (`…-evil`/`…-fork`): an unanchored
+    # strip would delete the real-slug prefix and leave only `-evil`, hiding the
+    # bare owner. LEADING collision (`xgetvoicify/…`, `my-getvoicify/…`): a
+    # trailing-only anchor would strip the `getvoicify/claude-plugins` substring
+    # and leave `x`, hiding what is really a bare-getvoicify usage.
     assert "getvoicify (outside getvoicify/claude-plugins)" in (
         find_readme_forbidden_literals("git clone getvoicify/claude-plugins-evil")
     )
     assert "getvoicify (outside getvoicify/claude-plugins)" in (
         find_readme_forbidden_literals("git clone getvoicify/claude-plugins-fork")
     )
-    # The EXACT slug followed by any non-word, non-hyphen delimiter (space, `/`,
-    # `.`, `)`, `#`, EOL, …) stays allowed — the anchor must not over-reject.
+    assert "getvoicify (outside getvoicify/claude-plugins)" in (
+        find_readme_forbidden_literals("git clone xgetvoicify/claude-plugins")
+    )
+    assert "getvoicify (outside getvoicify/claude-plugins)" in (
+        find_readme_forbidden_literals("git clone my-getvoicify/claude-plugins")
+    )
+    # The EXACT slug bounded by any non-word, non-hyphen delimiter on either
+    # side stays allowed — the anchors must not over-reject. Trailing: space,
+    # `/`, `.`, `)`, `#`, EOL. Leading: start-of-line, space, `/` (as in a URL
+    # `github.com/getvoicify/claude-plugins`), `(`.
     for trailing in ("", " x", "/issues/9", ".git", ")", "#9"):
         assert (
             find_readme_forbidden_literals(f"getvoicify/claude-plugins{trailing}") == []
         ), f"exact slug with trailing {trailing!r} should be allowed"
+    for leading in ("", "git clone ", "github.com/", "("):
+        assert (
+            find_readme_forbidden_literals(f"{leading}getvoicify/claude-plugins") == []
+        ), f"exact slug with leading {leading!r} should be allowed"
     # gangan, the old marketplace name, and node-ID shapes are banned outright.
     assert "gangan" in find_readme_forbidden_literals("gangan-api done")
     assert "tom-plugins" in find_readme_forbidden_literals("claude plugin install epic@tom-plugins")
