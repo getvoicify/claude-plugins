@@ -203,9 +203,12 @@ def test_config_lookup_order_sentence_present(name):
 #   description, and a `skills` field that must be PRESENT (omission would
 #   be a vacuous pass), `./`-prefixed, and resolve (relative to `epic/`) to
 #   a directory containing all three skill dirs.
-# - Root `.agents/plugins/marketplace.json`: Codex repo catalog, top-level
-#   name "tom-plugins", at least one plugins[] entry with
-#   source.source == "local" and a `./`-prefixed path resolving to `epic/`.
+# - Root `.agents/plugins/marketplace.json`: Codex repo catalog. Its top-level
+#   `name` is pinned to "epic-plugins" alongside the Claude catalog
+#   (`.claude-plugin/marketplace.json`) — both must match MARKETPLACE_NAME and
+#   each other (see test_marketplace_catalog_names_are_epic_plugins). It must
+#   also carry at least one plugins[] entry with source.source == "local" and a
+#   `./`-prefixed path resolving to `epic/`.
 
 EPIC_DIR = REPO_ROOT / "epic"
 CLAUDE_MANIFEST_PATH = EPIC_DIR / ".claude-plugin" / "plugin.json"
@@ -467,7 +470,12 @@ LICENSE_PATH = REPO_ROOT / "LICENSE"
 
 def test_root_license_present_and_mit():
     assert LICENSE_PATH.is_file(), "root LICENSE file must exist (spec D11)"
-    first_line = LICENSE_PATH.read_text(encoding="utf-8").splitlines()[0]
+    lines = LICENSE_PATH.read_text(encoding="utf-8").splitlines()
+    # Guard the empty-file case explicitly — indexing lines[0] on an empty
+    # LICENSE would raise IndexError (an ugly error) instead of an actionable
+    # assertion failure.
+    assert lines, "root LICENSE must not be empty"
+    first_line = lines[0]
     assert "MIT" in first_line, (
         f"root LICENSE first line must name the MIT license, got {first_line!r}"
     )
