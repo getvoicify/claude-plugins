@@ -183,8 +183,8 @@ dir name, so `/create`, `/epic`, `/migrate`, with trailing arguments
 Headless note: plain `cursor-agent -p` auto-rejects ALL tool calls (despite
 the help text's claim of full tool access) — the gh-dependent legs (`status`,
 `migrate`) need `--force` (full auto-approval; `--auto-review` exists as an
-untested middle option). For headless smoke runs use
-`-p --output-format text --trust` plus `--force`.
+untested middle option). For headless smoke runs use the full command
+`cursor-agent -p --output-format text --trust --force "<prompt>"`.
 
 ### OpenCode
 
@@ -214,9 +214,9 @@ The manual verification script for a release across all five agents.
 (Executing it is a separate task — this section is the script.)
 
 Last smoke: all five agents verified 2026-07-22/23 — claude 2.1.217,
-codex-cli 0.145.0, kimi 0.29.0, opencode 1.17.13
-(`-m opencode/deepseek-v4-flash-free` — the configured default model was
-broken on the smoke machine, hence the explicit flag), cursor-agent
+codex-cli 0.145.0, kimi 0.29.0, opencode 1.17.13 (run as
+`opencode -m opencode/deepseek-v4-flash-free` — the configured default
+model was broken on the smoke machine, hence the explicit flag), cursor-agent
 2026.07.20. The gangan-default-epic-home probe order (skills try
 getvoicify/gangan then the cwd repo) is by design.
 
