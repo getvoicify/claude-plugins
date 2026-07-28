@@ -213,6 +213,7 @@ def test_config_lookup_order_sentence_present(name):
 EPIC_DIR = REPO_ROOT / "epic"
 CLAUDE_MANIFEST_PATH = EPIC_DIR / ".claude-plugin" / "plugin.json"
 CODEX_MANIFEST_PATH = EPIC_DIR / ".codex-plugin" / "plugin.json"
+KIMI_MANIFEST_PATH = REPO_ROOT / ".kimi-plugin" / "plugin.json"
 CODEX_CATALOG_PATH = REPO_ROOT / ".agents" / "plugins" / "marketplace.json"
 CLAUDE_CATALOG_PATH = REPO_ROOT / ".claude-plugin" / "marketplace.json"
 
@@ -278,7 +279,7 @@ def test_codex_manifest_description_non_empty():
     )
 
 
-def check_codex_skills_field(manifest_path, epic_dir):
+def check_skills_field(manifest_path, base_dir):
     skills = load_json(manifest_path).get("skills")
     # PRESENT and a string — an omitted `skills` field must fail, not
     # vacuously pass (issue #13 pin, blocking defect 2).
@@ -290,14 +291,14 @@ def check_codex_skills_field(manifest_path, epic_dir):
     )
     # Resolve fully (symlinks included) and require containment — a
     # `./`-prefixed path like `./../somewhere` must not escape the plugin dir.
-    epic_dir_resolved = epic_dir.resolve()
-    skills_dir = (epic_dir_resolved / skills).resolve()
-    assert skills_dir.is_relative_to(epic_dir_resolved), (
+    base_dir_resolved = base_dir.resolve()
+    skills_dir = (base_dir_resolved / skills).resolve()
+    assert skills_dir.is_relative_to(base_dir_resolved), (
         f"`skills` path {skills!r} resolves to {skills_dir}, "
-        f"which escapes the plugin dir {epic_dir_resolved}"
+        f"which escapes the plugin dir {base_dir_resolved}"
     )
     assert skills_dir.is_dir(), (
-        f"`skills` path {skills!r} does not resolve to a directory under {epic_dir}"
+        f"`skills` path {skills!r} does not resolve to a directory under {base_dir}"
     )
     for name in SKILL_NAMES:
         assert (skills_dir / name).is_dir(), (
@@ -306,7 +307,7 @@ def check_codex_skills_field(manifest_path, epic_dir):
 
 
 def test_codex_manifest_skills_field_present_and_resolves():
-    check_codex_skills_field(CODEX_MANIFEST_PATH, EPIC_DIR)
+    check_skills_field(CODEX_MANIFEST_PATH, EPIC_DIR)
 
 
 def test_codex_skills_path_escaping_epic_dir_is_rejected(tmp_path):
@@ -324,7 +325,31 @@ def test_codex_skills_path_escaping_epic_dir_is_rejected(tmp_path):
         encoding="utf-8",
     )
     with pytest.raises(AssertionError, match="skills"):
-        check_codex_skills_field(manifest_path, epic_dir)
+        check_skills_field(manifest_path, epic_dir)
+
+
+def test_kimi_manifest_name_is_epic():
+    assert load_json(KIMI_MANIFEST_PATH).get("name") == "epic", (
+        ".kimi-plugin/plugin.json `name` must be 'epic'"
+    )
+
+
+def test_kimi_manifest_version_lockstep_with_claude_manifest():
+    check_version_lockstep(KIMI_MANIFEST_PATH, CLAUDE_MANIFEST_PATH)
+
+
+def test_kimi_manifest_description_non_empty():
+    description = load_json(KIMI_MANIFEST_PATH).get("description")
+    assert isinstance(description, str) and description.strip(), (
+        ".kimi-plugin/plugin.json `description` must be a non-empty string"
+    )
+
+
+def test_kimi_manifest_skills_field_present_and_resolves():
+    # Kimi resolves `skills` relative to the plugin root = the REPO ROOT (not
+    # the manifest's own dir), so `./epic/skills/` must resolve to epic/skills/
+    # and contain the three skill dirs.
+    check_skills_field(KIMI_MANIFEST_PATH, REPO_ROOT)
 
 
 # Task 5: release lockstep across both plugin manifests (design §Versioning /
