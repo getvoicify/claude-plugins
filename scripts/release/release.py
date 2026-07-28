@@ -22,6 +22,10 @@ def _codex_plugin_json(repo_root, source):
     return Path(repo_root) / source / ".codex-plugin" / "plugin.json"
 
 
+def _kimi_plugin_json(repo_root):
+    return Path(repo_root) / ".kimi-plugin" / "plugin.json"
+
+
 def read_version(repo_root, source):
     return json.loads(_plugin_json(repo_root, source).read_text())["version"]
 
@@ -38,6 +42,9 @@ def write_version(repo_root, source, new_version):
     codex_path = _codex_plugin_json(repo_root, source)
     if codex_path.is_file():
         _patch_version(codex_path, new_version)
+    kimi_path = _kimi_plugin_json(repo_root)
+    if kimi_path.is_file():
+        _patch_version(kimi_path, new_version)
     _patch_version(_plugin_json(repo_root, source), new_version)
 
 

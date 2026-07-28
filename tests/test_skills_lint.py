@@ -364,7 +364,7 @@ RELEASE_WORKFLOW_PATH = REPO_ROOT / ".github" / "workflows" / "release.yml"
 GIT_ADD_RE = re.compile(r"^[ \t]*git add[ \t]+(.+)$", re.MULTILINE)
 
 
-def test_release_workflow_git_add_stages_both_manifests():
+def test_release_workflow_git_add_stages_all_manifests():
     text = RELEASE_WORKFLOW_PATH.read_text(encoding="utf-8")
     invocations = GIT_ADD_RE.findall(text)
     assert invocations, (
@@ -372,7 +372,11 @@ def test_release_workflow_git_add_stages_both_manifests():
         "invocation found in the release workflow"
     )
     staged = " ".join(invocations)
-    for manifest in (".claude-plugin/plugin.json", ".codex-plugin/plugin.json"):
+    for manifest in (
+        ".claude-plugin/plugin.json",
+        ".codex-plugin/plugin.json",
+        ".kimi-plugin/plugin.json",
+    ):
         assert manifest in staged, (
             f"{RELEASE_WORKFLOW_PATH.relative_to(REPO_ROOT)}: the `git add` "
             f"invocation(s) must stage {manifest}; found: {invocations}"
