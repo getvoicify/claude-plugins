@@ -352,13 +352,13 @@ def test_kimi_manifest_skills_field_present_and_resolves():
     check_skills_field(KIMI_MANIFEST_PATH, REPO_ROOT)
 
 
-# Task 5: release lockstep across both plugin manifests (design §Versioning /
+# Task 5: release lockstep across all plugin manifests (design §Versioning /
 # release, runbook §Task 5).
 #
-# The release workflow's commit step must `git add` BOTH manifest paths.
-# Parsed from the actual `git add` invocation line(s) — not bare string
-# presence anywhere in the file, so a comment naming the Codex manifest
-# cannot vacuously pass.
+# The release workflow's commit step must `git add` all three manifest paths
+# (Claude, Codex, Kimi). Parsed from the actual `git add` invocation line(s) —
+# not bare string presence anywhere in the file, so a comment naming a
+# manifest cannot vacuously pass.
 
 RELEASE_WORKFLOW_PATH = REPO_ROOT / ".github" / "workflows" / "release.yml"
 GIT_ADD_RE = re.compile(r"^[ \t]*git add[ \t]+(.+)$", re.MULTILINE)
@@ -472,6 +472,29 @@ def test_installing_has_subsection_per_agent(agent):
     )
     assert re.search(rf"^### {re.escape(agent)}[ \t]*$", installing, re.MULTILINE), (
         f"epic/README.md `## Installing` must contain a `### {agent}` subsection"
+    )
+
+
+def test_kimi_section_documents_native_install():
+    installing = extract_h2_section(read_epic_readme(), "Installing")
+    assert installing is not None, (
+        "epic/README.md must have a `## Installing` section"
+    )
+    # Isolate the `### Kimi Code` block the same way extract_h2_section
+    # isolates an H2 body: heading line, then everything up to the next
+    # same-level heading (`### `) or end of the Installing section.
+    match = re.search(
+        r"^### Kimi Code[ \t]*$(.*?)(?=^### |\Z)",
+        installing,
+        re.MULTILINE | re.DOTALL,
+    )
+    assert match, (
+        "epic/README.md `## Installing` must contain a `### Kimi Code` subsection"
+    )
+    normalized = " ".join(match.group(1).lower().split())
+    assert "/plugins install" in normalized, (
+        "the Kimi Code README section must document the native "
+        "`/plugins install` route"
     )
 
 

@@ -209,6 +209,19 @@ Copy `epic/skills/*` into one of Kimi's skills directories.
   applies at project level, so a project `.config/agents/skills/` — if
   present — would shadow `.agents/skills/`.
 
+**Native install (Kimi plugin marketplace).** From Kimi's TUI:
+
+```text
+/plugins install https://github.com/getvoicify/claude-plugins
+```
+
+This reads the repo-root `.kimi-plugin/plugin.json` and registers `/skill:epic`,
+`/skill:create`, `/skill:migrate`. Note: a bare repo URL installs the latest
+GitHub **release tag**, so this route works from the first release that includes
+the Kimi manifest onward; to install the current `main` before a release, use
+`/plugins install https://github.com/getvoicify/claude-plugins/tree/main`.
+Manage installs with `/plugins list`, `/plugins enable`, `/plugins reload`.
+
 Invocation: `/skill:<name>` with trailing text as the request, e.g.
 `/skill:create a rate-limiter epic`.
 
