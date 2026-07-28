@@ -52,6 +52,9 @@ jobs:
               if [ -f "${src#./}/.codex-plugin/plugin.json" ]; then
                 git add "${src#./}/.codex-plugin/plugin.json"
               fi
+              if [ -f ".kimi-plugin/plugin.json" ]; then
+                git add ".kimi-plugin/plugin.json"
+              fi
               git commit -m "chore(release): ${name} v${ver} [skip ci]"
             fi
             git tag -a "$tag" -m "${name} v${ver}"

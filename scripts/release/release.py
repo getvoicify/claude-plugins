@@ -22,6 +22,12 @@ def _codex_plugin_json(repo_root, source):
     return Path(repo_root) / source / ".codex-plugin" / "plugin.json"
 
 
+def _kimi_plugin_json(repo_root):
+    # Kimi permits one plugin manifest per repo, so this is a single repo-root
+    # manifest — source-independent, unlike the per-plugin Claude/Codex ones.
+    return Path(repo_root) / ".kimi-plugin" / "plugin.json"
+
+
 def read_version(repo_root, source):
     return json.loads(_plugin_json(repo_root, source).read_text())["version"]
 
@@ -33,12 +39,19 @@ def _patch_version(path, new_version):
 
 
 def write_version(repo_root, source, new_version):
-    # Patch the optional Codex manifest first: if it is present but broken,
-    # fail before mutating anything so the manifests never drift apart.
-    codex_path = _codex_plugin_json(repo_root, source)
-    if codex_path.is_file():
-        _patch_version(codex_path, new_version)
-    _patch_version(_plugin_json(repo_root, source), new_version)
+    # Validate every manifest we are about to patch parses as JSON BEFORE
+    # mutating any of them: if one is broken, fail without touching the
+    # others so the manifests never drift apart.
+    paths = [
+        p
+        for p in (_codex_plugin_json(repo_root, source), _kimi_plugin_json(repo_root))
+        if p.is_file()
+    ]
+    paths.append(_plugin_json(repo_root, source))  # required Claude manifest, last
+    for path in paths:
+        json.loads(path.read_text())
+    for path in paths:
+        _patch_version(path, new_version)
 
 
 def _git(*args):

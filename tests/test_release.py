@@ -45,6 +45,33 @@ def test_write_version_writes_both_manifests(tmp_path):
     assert codex_pj.read_text().endswith("\n")
 
 
+def test_write_version_writes_kimi_manifest_at_repo_root(tmp_path):
+    claude_pj = tmp_path / "epic" / ".claude-plugin" / "plugin.json"
+    kimi_pj = tmp_path / ".kimi-plugin" / "plugin.json"  # REPO ROOT, not under epic/
+    _write_manifest(claude_pj, {"name": "epic", "version": "0.1.0"})
+    _write_manifest(
+        kimi_pj,
+        {"name": "epic", "version": "0.1.0", "skills": "./epic/skills/"},
+    )
+
+    release.write_version(tmp_path, "./epic", "0.2.0")
+
+    data = json.loads(kimi_pj.read_text())
+    assert data["version"] == "0.2.0"
+    assert data["skills"] == "./epic/skills/"  # extras preserved
+    assert kimi_pj.read_text().endswith("\n")
+
+
+def test_write_version_skips_absent_kimi_manifest(tmp_path):
+    claude_pj = tmp_path / "epic" / ".claude-plugin" / "plugin.json"
+    _write_manifest(claude_pj, {"name": "epic", "version": "0.1.0"})
+
+    release.write_version(tmp_path, "./epic", "0.2.0")
+
+    assert json.loads(claude_pj.read_text())["version"] == "0.2.0"
+    assert not (tmp_path / ".kimi-plugin").exists()
+
+
 def test_write_version_preserves_codex_manifest_extras(tmp_path):
     claude_pj = tmp_path / "epic" / ".claude-plugin" / "plugin.json"
     codex_pj = tmp_path / "epic" / ".codex-plugin" / "plugin.json"
@@ -100,6 +127,24 @@ def test_write_version_leaves_claude_untouched_when_codex_malformed(tmp_path):
     with pytest.raises(json.JSONDecodeError):
         release.write_version(tmp_path, "./epic", "0.2.0")
 
+    assert claude_pj.read_text() == claude_before
+
+
+def test_write_version_leaves_codex_untouched_when_kimi_malformed(tmp_path):
+    claude_pj = tmp_path / "epic" / ".claude-plugin" / "plugin.json"
+    codex_pj = tmp_path / "epic" / ".codex-plugin" / "plugin.json"
+    kimi_pj = tmp_path / ".kimi-plugin" / "plugin.json"
+    _write_manifest(claude_pj, {"name": "epic", "version": "0.1.0"})
+    _write_manifest(codex_pj, {"name": "epic", "version": "0.1.0"})
+    kimi_pj.parent.mkdir(parents=True, exist_ok=True)
+    kimi_pj.write_text("{not json")
+    codex_before = codex_pj.read_text()
+    claude_before = claude_pj.read_text()
+
+    with pytest.raises(json.JSONDecodeError):
+        release.write_version(tmp_path, "./epic", "0.2.0")
+
+    assert codex_pj.read_text() == codex_before
     assert claude_pj.read_text() == claude_before
 
 
