@@ -130,6 +130,24 @@ def test_write_version_leaves_claude_untouched_when_codex_malformed(tmp_path):
     assert claude_pj.read_text() == claude_before
 
 
+def test_write_version_leaves_codex_untouched_when_kimi_malformed(tmp_path):
+    claude_pj = tmp_path / "epic" / ".claude-plugin" / "plugin.json"
+    codex_pj = tmp_path / "epic" / ".codex-plugin" / "plugin.json"
+    kimi_pj = tmp_path / ".kimi-plugin" / "plugin.json"
+    _write_manifest(claude_pj, {"name": "epic", "version": "0.1.0"})
+    _write_manifest(codex_pj, {"name": "epic", "version": "0.1.0"})
+    kimi_pj.parent.mkdir(parents=True, exist_ok=True)
+    kimi_pj.write_text("{not json")
+    codex_before = codex_pj.read_text()
+    claude_before = claude_pj.read_text()
+
+    with pytest.raises(json.JSONDecodeError):
+        release.write_version(tmp_path, "./epic", "0.2.0")
+
+    assert codex_pj.read_text() == codex_before
+    assert claude_pj.read_text() == claude_before
+
+
 def test_tag_to_version_parses_well_formed():
     assert release._tag_to_version("epic-v1.2.3", "epic") == (1, 2, 3)
 
