@@ -277,6 +277,16 @@ confirming the named symbol is present, reporting `verified`, `stale` (the ref
 resolves but the symbol is gone or moved) or `unverifiable` (the path or ref
 does not resolve). It runs at pin time and again at every stall.
 
+**The symbol match is word-bounded, not a substring test.** A substring match
+reports `verified` for a claim naming `refresh` when the source contains only
+`refreshToken` or `_refresh` — exactly the state after the real symbol was
+renamed. That is a false `verified`: the check would confirm the very pin rot it
+exists to catch, and the driver would proceed confidently on a false premise.
+Matching on `\b`-delimited identifiers closes the prefix/suffix class. An
+occurrence inside a comment or string literal still counts as present; removing
+that residual needs language-aware parsing and is deliberately out of scope,
+since the identifier class is the one that actually fires.
+
 A load-bearing claim that cannot be verified is never silently built upon:
 interactive asks; `run` records it explicitly as an assumption in both the pin
 comment and the PR body, so a wrong premise is visible in review rather than
