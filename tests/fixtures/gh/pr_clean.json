@@ -1,0 +1,9 @@
+{
+  "mergeStateStatus": "CLEAN",
+  "mergeable": "MERGEABLE",
+  "reviewDecision": "APPROVED",
+  "isDraft": false,
+  "statusCheckRollup": [
+    {"name": "unit", "conclusion": "SUCCESS", "status": "COMPLETED"}
+  ]
+}

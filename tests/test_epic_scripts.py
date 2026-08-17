@@ -369,3 +369,95 @@ def test_no_halt_while_a_child_is_in_flight():
 
 def test_no_halt_when_epic_is_complete():
     assert halt_reason([child(3, 0, state="CLOSED")], [], 3) is None
+
+
+# Task 7: mergeability tests
+
+import pathlib
+
+from mergeability import is_clean, requirements
+
+FIXTURES = pathlib.Path(__file__).parent / "fixtures" / "gh"
+
+
+def load(name):
+    return json.loads((FIXTURES / name).read_text())
+
+
+def codes(reqs):
+    return [r["code"] for r in reqs]
+
+
+def test_clean_pr_has_no_requirements():
+    reqs = requirements(load("pr_clean.json"), {}, [])
+    assert reqs == []
+    assert is_clean(reqs) is True
+
+
+def test_behind_base_is_reported_with_update_action():
+    reqs = requirements(load("pr_behind.json"), {}, [])
+    assert codes(reqs) == ["behind-base"]
+    assert reqs[0]["action"] == "update-branch"
+    assert is_clean(reqs) is False
+
+
+def test_dirty_reports_conflict():
+    pr = {"mergeStateStatus": "DIRTY", "statusCheckRollup": [], "isDraft": False}
+    assert codes(requirements(pr, {}, [])) == ["conflict"]
+
+
+def test_draft_is_reported():
+    pr = {"mergeStateStatus": "BLOCKED", "statusCheckRollup": [], "isDraft": True}
+    assert "draft" in codes(requirements(pr, {}, []))
+
+
+def test_failing_and_pending_checks_are_named_individually():
+    pr = {
+        "mergeStateStatus": "BLOCKED",
+        "isDraft": False,
+        "statusCheckRollup": [
+            {"name": "unit", "conclusion": "FAILURE", "status": "COMPLETED"},
+            {"name": "lint", "conclusion": None, "status": "IN_PROGRESS"},
+        ],
+    }
+    assert codes(requirements(pr, {}, [])) == [
+        "check-failing:unit",
+        "check-pending:lint",
+    ]
+
+
+def test_required_check_never_started_is_missing_not_pending():
+    pr = {"mergeStateStatus": "BLOCKED", "isDraft": False, "statusCheckRollup": []}
+    ruleset = {"required_status_checks": ["claude-review"]}
+    assert codes(requirements(pr, ruleset, [])) == ["check-missing:claude-review"]
+
+
+def test_unresolved_threads_are_reported_per_thread():
+    threads = [
+        {"id": "T_1", "isResolved": False, "isOutdated": False, "path": "a.py"},
+        {"id": "T_2", "isResolved": True, "isOutdated": False, "path": "b.py"},
+    ]
+    pr = {"mergeStateStatus": "BLOCKED", "isDraft": False, "statusCheckRollup": []}
+    assert codes(requirements(pr, {}, threads)) == ["thread-unresolved:T_1"]
+
+
+def test_changes_requested_is_reported():
+    pr = {
+        "mergeStateStatus": "BLOCKED",
+        "isDraft": False,
+        "statusCheckRollup": [],
+        "reviewDecision": "CHANGES_REQUESTED",
+    }
+    assert "changes-requested" in codes(requirements(pr, {}, []))
+
+
+def test_missing_approval_is_reported_as_waiting_on_human():
+    pr = {
+        "mergeStateStatus": "BLOCKED",
+        "isDraft": False,
+        "statusCheckRollup": [],
+        "reviewDecision": "REVIEW_REQUIRED",
+    }
+    reqs = requirements(pr, {"required_approving_review_count": 1}, [])
+    approval = [r for r in reqs if r["code"] == "approval-missing"][0]
+    assert approval["action"] == "park-waiting-on-human"
