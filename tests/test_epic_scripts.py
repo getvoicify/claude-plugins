@@ -12,6 +12,7 @@ from config import (
     validate_prefix,
 )
 from preflight import check
+from schedule import runnable
 
 
 def test_run_json_parses_stdout(monkeypatch):
@@ -153,3 +154,53 @@ def test_check_ignores_unrelated_worktrees():
     # Non-owned worktrees do not count toward concurrency cap
     trees = ["other-epic-1"]
     assert check("dark-mode", 12, trees, 1, False) == []
+
+
+def child(number, position, **kw):
+    base = {
+        "number": number,
+        "state": "OPEN",
+        "position": position,
+        "priority": None,
+        "blocked_by": [],
+        "parked": False,
+        "pr": None,
+    }
+    base.update(kw)
+    return base
+
+
+def test_runnable_orders_by_position():
+    kids = [child(5, 1), child(3, 0)]
+    assert runnable(kids, 3, 0) == [3, 5]
+
+
+def test_runnable_priority_breaks_position_ties():
+    kids = [child(5, 0, priority="P2"), child(3, 0, priority="P0")]
+    assert runnable(kids, 3, 0) == [3, 5]
+
+
+def test_runnable_excludes_blocked_children():
+    kids = [child(3, 0), child(4, 1, blocked_by=[3])]
+    assert runnable(kids, 3, 0) == [3]
+
+
+def test_runnable_includes_child_whose_blocker_closed():
+    kids = [child(3, 0, state="CLOSED"), child(4, 1, blocked_by=[3])]
+    assert runnable(kids, 3, 0) == [4]
+
+
+def test_runnable_excludes_parked_closed_and_pr_open():
+    kids = [
+        child(3, 0, parked=True),
+        child(4, 1, state="CLOSED"),
+        child(5, 2, pr={"number": 101, "state": "OPEN"}),
+        child(6, 3),
+    ]
+    assert runnable(kids, 3, 0) == [6]
+
+
+def test_runnable_respects_capacity():
+    kids = [child(3, 0), child(4, 1), child(5, 2)]
+    assert runnable(kids, 3, 2) == [3]
+    assert runnable(kids, 3, 3) == []
