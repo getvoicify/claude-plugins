@@ -12,7 +12,7 @@ from config import (
     validate_prefix,
 )
 from preflight import check
-from schedule import runnable, became_ready_at, merge_queue
+from schedule import runnable, became_ready_at, merge_queue, halt_reason, park_signature
 
 
 def test_run_json_parses_stdout(monkeypatch):
@@ -305,3 +305,67 @@ def test_became_ready_at_excludes_non_open_pr_state(state):
         "gate_cleared_at": {"ci": "2026-08-17T10:00:00Z"},
     })
     assert became_ready_at(child_) is None
+
+
+def test_park_signature_is_stable_and_normalized():
+    a = park_signature("claude-review", "Timed  out\nwaiting")
+    b = park_signature("claude-review", "timed out waiting")
+    assert a == b
+    assert len(a) == 12
+
+
+def test_park_signature_differs_by_gate():
+    assert park_signature("ci", "boom") != park_signature("coderabbit", "boom")
+
+
+def test_halt_on_three_matching_signatures():
+    parks = [
+        {"child": n, "gate": "ci", "reason": "runner offline",
+         "waiting_on_human": False}
+        for n in (3, 4, 5)
+    ]
+    kids = [child(6, 0)]
+    assert halt_reason(kids, parks, 3).startswith("systemic:")
+
+
+def test_no_halt_when_signatures_differ():
+    parks = [
+        {"child": 3, "gate": "ci", "reason": "a", "waiting_on_human": False},
+        {"child": 4, "gate": "ci", "reason": "b", "waiting_on_human": False},
+        {"child": 5, "gate": "ci", "reason": "c", "waiting_on_human": False},
+    ]
+    assert halt_reason([child(6, 0)], parks, 3) is None
+
+
+def test_waiting_on_human_parks_never_trigger_systemic_halt():
+    parks = [
+        {"child": n, "gate": "approval-missing", "reason": "needs approval",
+         "waiting_on_human": True}
+        for n in (3, 4, 5)
+    ]
+    assert halt_reason([child(6, 0)], parks, 3) is None
+
+
+def test_halt_when_nothing_runnable_and_epic_incomplete():
+    kids = [child(3, 0, parked=True), child(4, 1, blocked_by=[3])]
+    assert halt_reason(kids, [], 3) == "transitive-block"
+
+
+def test_halt_no_runnable_work_without_blockers():
+    kids = [child(3, 0, parked=True)]
+    assert halt_reason(kids, [], 3) == "no-runnable-work"
+
+
+def test_no_halt_while_work_remains():
+    assert halt_reason([child(3, 0)], [], 3) is None
+
+
+def test_no_halt_while_a_child_is_in_flight():
+    # runnable() excludes children with an open PR, so an in-flight child must
+    # be counted as work separately or the run halts on top of live work.
+    kids = [child(3, 0, pr={"number": 101, "state": "OPEN"})]
+    assert halt_reason(kids, [], 3) is None
+
+
+def test_no_halt_when_epic_is_complete():
+    assert halt_reason([child(3, 0, state="CLOSED")], [], 3) is None
