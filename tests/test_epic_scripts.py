@@ -12,7 +12,7 @@ from config import (
     validate_prefix,
 )
 from preflight import check
-from schedule import runnable
+from schedule import runnable, became_ready_at, merge_queue
 
 
 def test_run_json_parses_stdout(monkeypatch):
@@ -204,3 +204,60 @@ def test_runnable_respects_capacity():
     kids = [child(3, 0), child(4, 1), child(5, 2)]
     assert runnable(kids, 3, 2) == [3]
     assert runnable(kids, 3, 3) == []
+
+
+def pr(number, gates, cleared):
+    return {"number": number, "state": "OPEN", "gates": gates,
+            "gate_cleared_at": cleared}
+
+
+def test_became_ready_at_is_latest_cleared_gate():
+    child_ = child(3, 0, pr=pr(
+        101,
+        {"claude-review": "clean", "coderabbit": "clean"},
+        {"claude-review": "2026-08-17T10:00:00Z",
+         "coderabbit": "2026-08-17T10:05:00Z"},
+    ))
+    assert became_ready_at(child_) == "2026-08-17T10:05:00Z"
+
+
+def test_became_ready_at_treats_na_as_clean():
+    child_ = child(3, 0, pr=pr(
+        101,
+        {"claude-review": "na", "coderabbit": "clean"},
+        {"coderabbit": "2026-08-17T10:05:00Z"},
+    ))
+    assert became_ready_at(child_) == "2026-08-17T10:05:00Z"
+
+
+@pytest.mark.parametrize("state", ["pending", "red"])
+def test_became_ready_at_is_none_when_any_gate_unclean(state):
+    child_ = child(3, 0, pr=pr(
+        101,
+        {"claude-review": state, "coderabbit": "clean"},
+        {"coderabbit": "2026-08-17T10:05:00Z"},
+    ))
+    assert became_ready_at(child_) is None
+
+
+def test_became_ready_at_none_without_pr():
+    assert became_ready_at(child(3, 0)) is None
+
+
+def test_merge_queue_is_fifo_not_position_order():
+    early = child(9, 5, pr=pr(109, {"ci": "clean"}, {"ci": "2026-08-17T09:00:00Z"}))
+    late = child(2, 0, pr=pr(102, {"ci": "clean"}, {"ci": "2026-08-17T11:00:00Z"}))
+    assert merge_queue([late, early]) == [9, 2]
+
+
+def test_merge_queue_ties_break_on_position():
+    same = "2026-08-17T09:00:00Z"
+    a = child(9, 5, pr=pr(109, {"ci": "clean"}, {"ci": same}))
+    b = child(2, 0, pr=pr(102, {"ci": "clean"}, {"ci": same}))
+    assert merge_queue([a, b]) == [2, 9]
+
+
+def test_merge_queue_excludes_unready_children():
+    ready = child(2, 0, pr=pr(102, {"ci": "clean"}, {"ci": "2026-08-17T09:00:00Z"}))
+    waiting = child(3, 1, pr=pr(103, {"ci": "pending"}, {}))
+    assert merge_queue([ready, waiting]) == [2]
