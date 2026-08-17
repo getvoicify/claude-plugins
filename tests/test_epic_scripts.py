@@ -261,3 +261,47 @@ def test_merge_queue_excludes_unready_children():
     ready = child(2, 0, pr=pr(102, {"ci": "clean"}, {"ci": "2026-08-17T09:00:00Z"}))
     waiting = child(3, 1, pr=pr(103, {"ci": "pending"}, {}))
     assert merge_queue([ready, waiting]) == [2]
+
+
+def test_became_ready_at_all_na_gates_falls_back_to_opened_at():
+    child_ = child(3, 0, pr={
+        "number": 101,
+        "state": "OPEN",
+        "gates": {"claude-review": "na", "copilot": "na"},
+        "gate_cleared_at": {},
+        "opened_at": "2026-08-17T08:00:00Z"
+    })
+    assert became_ready_at(child_) == "2026-08-17T08:00:00Z"
+
+
+def test_became_ready_at_empty_gates_dict_falls_back_to_opened_at():
+    child_ = child(3, 0, pr={
+        "number": 101,
+        "state": "OPEN",
+        "gates": {},
+        "gate_cleared_at": {},
+        "opened_at": "2026-08-17T08:00:00Z"
+    })
+    assert became_ready_at(child_) == "2026-08-17T08:00:00Z"
+
+
+def test_became_ready_at_prefers_max_stamp_over_opened_at():
+    child_ = child(3, 0, pr={
+        "number": 101,
+        "state": "OPEN",
+        "gates": {"ci": "clean"},
+        "gate_cleared_at": {"ci": "2026-08-17T10:00:00Z"},
+        "opened_at": "2026-08-17T08:00:00Z"
+    })
+    assert became_ready_at(child_) == "2026-08-17T10:00:00Z"
+
+
+@pytest.mark.parametrize("state", ["MERGED", "CLOSED"])
+def test_became_ready_at_excludes_non_open_pr_state(state):
+    child_ = child(3, 0, pr={
+        "number": 101,
+        "state": state,
+        "gates": {"ci": "clean"},
+        "gate_cleared_at": {"ci": "2026-08-17T10:00:00Z"},
+    })
+    assert became_ready_at(child_) is None

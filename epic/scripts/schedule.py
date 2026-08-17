@@ -32,10 +32,10 @@ def became_ready_at(child):
     if not pr or pr.get("state") != "OPEN":
         return None
     gates = pr.get("gates") or {}
-    if not gates or any(s not in _CLEAN_STATES for s in gates.values()):
+    if any(s not in _CLEAN_STATES for s in gates.values()):
         return None
     stamps = [t for t in (pr.get("gate_cleared_at") or {}).values() if t]
-    return max(stamps) if stamps else None
+    return max(stamps) if stamps else pr.get("opened_at")
 
 
 def merge_queue(children):
