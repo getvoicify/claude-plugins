@@ -33,4 +33,4 @@ def classify(claim, source):
         return "unverifiable"
     if source is None:
         return "unverifiable"
-    return "verified" if claim["symbol"] in source else "stale"
+    return "verified" if re.search(rf"\b{re.escape(claim['symbol'])}\b", source) else "stale"

@@ -685,3 +685,42 @@ def test_classify_unverifiable_when_source_missing():
 def test_classify_assumption_passes_through():
     claim = parse_claims(PIN)[1]
     assert classify(claim, None) == "assumption"
+
+
+def test_classify_stale_when_symbol_is_substring_suffix():
+    """Symbol 'refresh' is not verified when source contains only 'refreshToken'."""
+    claim = parse_claims(PIN)[0]
+    assert classify(claim, "fun refreshToken(): Result<Token> {}") == "stale"
+
+
+def test_classify_stale_when_symbol_is_substring_prefix():
+    """Symbol 'refresh' is not verified when source contains only '_refresh'."""
+    claim = parse_claims(PIN)[0]
+    assert classify(claim, "fun _refresh(): Result<Token> {}") == "stale"
+
+
+def test_classify_verified_with_word_boundaries():
+    """Symbol 'refresh' is verified when it appears as complete word."""
+    claim = parse_claims(PIN)[0]
+    assert classify(claim, "fun refresh(): Result<Token> {}") == "verified"
+
+
+def test_classify_with_regex_metacharacter_symbol():
+    """Symbols containing regex metacharacters match literally via re.escape()."""
+    # Test with dot (.) which is a regex wildcard but should match literally
+    claim = {"kind": "verified", "path": "file.py", "ref": "main",
+             "symbol": "foo.bar", "text": "setup"}
+    # Dot should match literally, not as a wildcard
+    assert classify(claim, "self.foo.bar = 42") == "verified"
+    # "fooXbar" should not match even though . matches any char in regex
+    assert classify(claim, "self.fooXbar = 42") == "stale"
+
+
+def test_parse_claims_empty_string():
+    """parse_claims('') returns empty list without raising."""
+    assert parse_claims("") == []
+
+
+def test_parse_claims_none():
+    """parse_claims(None) returns empty list without raising."""
+    assert parse_claims(None) == []
