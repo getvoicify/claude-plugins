@@ -210,16 +210,26 @@ config leaves it blank).
    reviewer subagent if your harness supports subagents (otherwise perform the
    review yourself inline, as a separate sequential pass) to attack the child's
    spec/runbook slice against current reality — verify every load-bearing claim
-   against the relevant sources (other
-   repos' code for API contracts, `origin/main` for drift since the docs merged;
-   never curl — use the sandbox runner or `gh`). Where it finds defects, amend the
-   plan via the pin (merged docs are not edited), then RE-RUN the reviewer on the
-   amended plan — one round is often not enough. Loop until a round returns zero
-   BLOCKING findings (blocking = would cause the drive to build the wrong thing or
-   fail verification; everything else is a residual), budget `PLAN_REVIEW_ROUNDS`
-   (default 3); exhausted with blocking findings still open → interactive: STOP and
-   hand off; `run`: park. Post the final pin — verified claims, every amendment,
-   AND any residual findings — as a child-issue comment before any code.
+   against the relevant sources (other repos' code for API contracts, `origin/main`
+   for drift since the docs merged; never curl — use the sandbox runner or `gh`).
+
+   Every load-bearing claim in the pin MUST carry a provenance tag:
+   `- verified: <path>@<ref>#<symbol> — <claim>` or `- assumption: <claim>`.
+   Run `python epic/scripts/verify_pin.py --pin <file>` to classify each one as
+   `verified`, `stale`, `unverifiable` or `assumption`. A `stale` claim is a
+   defect: amend the plan via the pin (merged docs are never edited) and re-run.
+   An `unverifiable` load-bearing claim is never silently built upon —
+   interactive: ASK; `run`: record it explicitly as an assumption in the pin
+   comment AND the PR body. On a contract/API-defining or P0 child, an
+   unverifiable load-bearing claim parks for human input instead.
+
+   Reviewers return findings as JSON: `[{"file", "anchor", "category", "claim",
+   "blocking"}]`. Feed consecutive rounds to `python epic/scripts/converge.py`,
+   which returns `converged`, `progress` or `no_progress`. Loop while it returns
+   `progress`. There is NO round budget. Two consecutive `no_progress` verdicts
+   are a STALL — see the convergence contract below. Post the final pin —
+   verified claims, every amendment, every assumption, AND any residual
+   findings — as a child-issue comment before any code.
 4. **Implementer subagent** (if supported; otherwise implement inline yourself,
    sequentially): TDD per runbook — failing tests first, implement, full
    suite green (toolchain commands from epic.yaml), commit.
@@ -229,15 +239,13 @@ config leaves it blank).
 6. **Pre-PR adversarial reviews**: run two read-only reviews framed as
    devil's-advocate critiques — as parallel subagents if supported, otherwise
    performed inline, sequentially (the reviews still happen, in-session) — a
-   spec-compliance reviewer (does the diff FULLY
-   satisfy the child's spec/runbook, no gaps?) and a quality reviewer (logic bugs,
-   security, missing tests, repo-convention violations). Implementer fixes; re-run BOTH
-   reviewers on the amended diff until a single round returns zero BLOCKING findings
-   from both (same blocking definition as step 3; residual nits are recorded in the
-   PR body, not loop fuel) — one round is often not enough (a fix can introduce new
-   defects). Budget
-   `PRE_PR_REVIEW_ROUNDS` (default 3); exhausted with blocking findings open → interactive:
-   STOP and hand off; `run`: park. When work is delegated, trust-but-verify every
+   spec-compliance reviewer (does the diff FULLY satisfy the child's spec/runbook,
+   no gaps?) and a quality reviewer (logic bugs, security, missing tests,
+   repo-convention violations). Both return the structured-finding JSON above.
+   Implementer fixes; re-run BOTH reviewers on the amended diff, feeding each round
+   to `converge.py`. Loop while it returns `progress`; stop on `converged`.
+   Residual (non-blocking) nits are recorded in the PR body, not loop fuel. There
+   is NO round budget. When work is delegated, trust-but-verify every
    subagent summary. The
    local CodeRabbit CLI pass is RETIRED here. The post-PR **Claude Review action** is a
    config-conditional gate: it applies only when `claude-review` is listed in the
@@ -260,6 +268,26 @@ config leaves it blank).
    section; a 422 means Copilot review is not available on this repo → treat Copilot
    as **N/A** (do not gate on it) and note that. Record whether the request succeeded
    (gates the Copilot wait/fix loop). Set Project Status = **In Review**.
+
+### Convergence contract (replaces every review round budget)
+
+A STALL is two consecutive `no_progress` verdicts from `converge.py`. A stall is
+treated as a PIN FAULT until proven otherwise:
+
+1. Re-run `verify_pin.py` over the pin; surface every `stale` claim.
+2. Re-run the step-3 reviewer against the PLAN, not the diff, supplying the
+   stalled findings as evidence.
+3. Pin amends → post the amendment as a child comment, reset the convergence
+   history, restart the loop. Bounded by `REPIN_ATTEMPTS` (1) — a second re-pin
+   means the problem is not the pin.
+4. Stall again after re-pin → interactive: ASK the operator with the surviving
+   findings and the suspect claims (via `AskUserQuestion` if your harness
+   supports structured questions; otherwise as numbered plain-text questions,
+   waiting for the reply); `run`: park.
+
+The only hard ceilings are resources: `CHILD_DRIVE_CEILING_S` (7200) from drive
+start to merge-queue entry, and `PR_WATCH_DEADLINE_S` (3600) per wait. Time spent
+waiting at the head of the merge queue is NOT charged to the child.
 
 ### 3. Merge phase (default) — or stop
 
@@ -338,11 +366,14 @@ PR map, `git worktree list`). **Never STOP or park with auto-merge armed unless 
 prose gate is confirmed satisfied** — on any park/STOP that leaves a PR behind while
 `--auto` is armed, run `gh pr merge <pr> --disable-auto` first and record it in the
 FAILED/park comment. Tunables (do not exceed): `CI_ESTIMATE=420s`,
-`CI_FIX_ROUNDS=3`, `PLAN_REVIEW_ROUNDS=3`, `PRE_PR_REVIEW_ROUNDS=3`,
+`CI_FIX_ROUNDS=3`,
 `CLAUDE_REVIEW_FIX_ROUNDS=3`, `CODERABBIT_FIX_ROUNDS=3`,
 `COPILOT_FIX_ROUNDS=3`,
 `CONFLICT_ATTEMPTS=2`, `MERGE_WAIT_CYCLES=4`, `MAX_WAIT_CYCLES=12`,
-`GLOBAL_PARK_THRESHOLD=3`, `CONSECUTIVE_PARK_HALT=2`.
+`GLOBAL_PARK_THRESHOLD=3`, `CONSECUTIVE_PARK_HALT=2`. The review loops (step-1 pin,
+pre-PR reviews) are not in this list — they run to convergence per the
+convergence contract above, bounded only by `REPIN_ATTEMPTS`,
+`CHILD_DRIVE_CEILING_S`, and `PR_WATCH_DEADLINE_S`.
 
 **Per-cycle:** recover & select (no eligible, unparked child left → if the epic is complete (all children CLOSED, none parked-open) apply the epic-completion rule (close epic if open + epic Status=Done); then final report, TERMINATE) → resume check (open PR from a prior cycle → verify worktree/branch
 integrity, then jump to fix-loop; closed-unmerged PR with worktree present →
