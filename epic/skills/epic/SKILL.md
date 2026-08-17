@@ -470,7 +470,9 @@ check/reviewer that never posted, rather than rescheduling forever.
   park never stalls the wave, and the merge queue keeps draining around it.
 - **Armed-but-refusing**: the head-of-queue PR has `--auto` armed and
   `mergeability.py` reports an EMPTY requirement set, yet the PR still has not
-  merged within `PR_WATCH_DEADLINE_S` — GitHub is refusing a merge that
+  merged within `PR_WATCH_DEADLINE_S` measured from the PR's own
+  `autoMergeRequest.enabledAt` (as reported by `gh`, not from when this cycle
+  happened to notice it) — GitHub is refusing a merge that
   nothing in the visible requirement set explains (an org-level ruleset, a
   GitHub-side merge queue, a required deployment). Disarm
   (`gh pr merge <pr> --disable-auto`), then park with a diagnostic recording
