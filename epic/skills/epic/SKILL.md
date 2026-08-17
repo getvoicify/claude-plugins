@@ -224,12 +224,19 @@ config leaves it blank).
    unverifiable load-bearing claim parks for human input instead.
 
    Reviewers return findings as JSON: `[{"file", "anchor", "category", "claim",
-   "blocking"}]`. Feed consecutive rounds to `python epic/scripts/converge.py`,
-   which returns `converged`, `progress` or `no_progress`. Loop while it returns
-   `progress`. There is NO round budget. Two consecutive `no_progress` verdicts
-   are a STALL — see the convergence contract below. Post the final pin —
-   verified claims, every amendment, every assumption, AND any residual
-   findings — as a child-issue comment before any code.
+   "blocking"}]`. `blocking: true` means the finding would cause the drive to
+   build the wrong thing or fail verification; everything else is a residual,
+   recorded in the PR body rather than looped on — `converge.py` computes every
+   verdict solely from findings flagged `blocking: true`, so label consistently
+   (this definition governs step 6's reviews too). Feed consecutive rounds to
+   `python epic/scripts/converge.py`, which returns `converged`, `progress` or
+   `no_progress`. On `converged`, stop. On `progress`, run another round. On
+   `no_progress`, do NOT stop yet — run one more round to confirm: a single
+   `no_progress` is not a stall, only two consecutive ones are. There is NO
+   round budget. Two consecutive `no_progress` verdicts are a STALL — see the
+   convergence contract below. Post the final pin — verified claims, every
+   amendment, every assumption, AND any residual findings — as a child-issue
+   comment before any code.
 4. **Implementer subagent** (if supported; otherwise implement inline yourself,
    sequentially): TDD per runbook — failing tests first, implement, full
    suite green (toolchain commands from epic.yaml), commit.
@@ -243,7 +250,9 @@ config leaves it blank).
    no gaps?) and a quality reviewer (logic bugs, security, missing tests,
    repo-convention violations). Both return the structured-finding JSON above.
    Implementer fixes; re-run BOTH reviewers on the amended diff, feeding each round
-   to `converge.py`. Loop while it returns `progress`; stop on `converged`.
+   to `converge.py`. Stop on `converged`; on `progress`, run another round; on
+   `no_progress`, run one more round to confirm — a single `no_progress` is not
+   a stall, only two consecutive ones are (same rule as step 3).
    Residual (non-blocking) nits are recorded in the PR body, not loop fuel. There
    is NO round budget. When work is delegated, trust-but-verify every
    subagent summary. The
@@ -279,8 +288,10 @@ treated as a PIN FAULT until proven otherwise:
    stalled findings as evidence.
 3. Pin amends → post the amendment as a child comment, reset the convergence
    history, restart the loop. Bounded by `REPIN_ATTEMPTS` (1) — a second re-pin
-   means the problem is not the pin.
-4. Stall again after re-pin → interactive: ASK the operator with the surviving
+   means the problem is not the pin. Pin does NOT amend (no `stale` claim, no
+   plan defect found) → the pin is not the fault; skip straight to item 4.
+4. Terminal handling — reached when the pin does not amend, or when a stall
+   recurs after a re-pin → interactive: ASK the operator with the surviving
    findings and the suspect claims (via `AskUserQuestion` if your harness
    supports structured questions; otherwise as numbered plain-text questions,
    waiting for the reply); `run`: park.
