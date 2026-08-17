@@ -29,6 +29,12 @@ def snapshot(pr, threads):
                     has_pending = True
                 elif state in {"FAILURE", "ERROR"}:
                     has_failure = True
+                elif state == "SUCCESS":
+                    # SUCCESS in StatusContext counts as passing (like NEUTRAL, SKIPPED in CheckRun)
+                    pass  # Don't set has_pending or has_failure
+                else:
+                    # Unrecognized state (including None): treat as pending (fail-open)
+                    has_pending = True
             else:
                 # Modern CheckRun
                 if c.get("status") != "COMPLETED":

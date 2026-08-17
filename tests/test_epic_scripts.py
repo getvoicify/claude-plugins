@@ -876,17 +876,21 @@ def test_snapshot_mixed_checks_statuscontext_failure():
 
 # Finding 2: resilience to transient errors
 
-def test_main_survives_transient_fetch_errors(monkeypatch):
-    """_fetch raises GhError twice, then succeeds → loop survives."""
-    from pr_watch import main, _fetch as real_fetch
+def test_main_resilience_survives_transient_errors_and_recovers(monkeypatch):
+    """Initial PENDING snapshot, _fetch fails twice then succeeds with change → returns 0 with event.
+
+    GUARDS: try/except around _fetch and counter reset on success.
+    WOULD FAIL if: try/except removed (first GhError propagates), or counter not reset (reaches 5 on retry).
+    """
+    from pr_watch import main
 
     fetch_call_count = [0]
 
-    def failing_fetch(repo, pr_number):
+    def fetching_snapshot(repo, pr_number):
         fetch_call_count[0] += 1
         if fetch_call_count[0] <= 2:
             raise gh.GhError(502, "Bad Gateway")
-        # Return valid data on third call
+        # Third call: success with changed state
         return {
             "headRefOid": "a1b2c3",
             "statusCheckRollup": [
@@ -895,32 +899,118 @@ def test_main_survives_transient_fetch_errors(monkeypatch):
             "reviews": [],
         }, []
 
-    monkeypatch.setattr("pr_watch._fetch", failing_fetch)
-    monkeypatch.setattr("pr_watch.time.sleep", lambda x: None)  # No-op sleep
-
-    # Initial snapshot succeeds
-    initial_pr = {
-        "headRefOid": "a1b2c3",
-        "statusCheckRollup": [
-            {"name": "unit", "status": "COMPLETED", "conclusion": "SUCCESS"}
-        ],
-        "reviews": [],
-    }
-
-    # Patch initial fetch too
+    # Initial snapshot: PENDING (not settled)
     initial_call_count = [0]
-    def initial_fetch(repo, pr_number):
+    def fetching_initial(repo, pr_number):
         initial_call_count[0] += 1
         if initial_call_count[0] == 1:
-            return initial_pr, []
-        return failing_fetch(repo, pr_number)
+            # Initial: PENDING so not settled, enters loop
+            return {
+                "headRefOid": "a1b2c3",
+                "statusCheckRollup": [
+                    {"name": "unit", "status": "IN_PROGRESS", "conclusion": None}
+                ],
+                "reviews": [],
+            }, []
+        return fetching_snapshot(repo, pr_number)
 
-    monkeypatch.setattr("pr_watch._fetch", initial_fetch)
+    monkeypatch.setattr("pr_watch._fetch", fetching_initial)
+    monkeypatch.setattr("pr_watch.time.sleep", lambda x: None)
 
-    # Now the loop should catch errors and emit an error event after 5 failures
-    # But with only 2 failures followed by success, we should report success
     result = main(["--repo", "a/b", "--pr", "1", "--await", "checks", "--deadline", "10000"])
-    assert result == 0  # Should succeed after retry
+    assert result == 0
+    assert fetch_call_count[0] >= 3  # Was called 3+ times
+
+
+def test_main_resilience_terminates_at_five_consecutive_failures(monkeypatch):
+    """Initial PENDING snapshot, _fetch fails permanently → returns 1 with error event at exactly 5 consecutive.
+
+    GUARDS: consecutive failure counter and 5-failure cap.
+    WOULD FAIL if: cap changed to 4, 6, or removed (infinite retries).
+    """
+    from pr_watch import main
+    import json
+    from io import StringIO
+
+    fetch_call_count = [0]
+
+    def always_fail(repo, pr_number):
+        fetch_call_count[0] += 1
+        raise gh.GhError(502, "Bad Gateway")
+
+    # Initial snapshot: PENDING
+    initial_call_count = [0]
+    def fetching_initial(repo, pr_number):
+        initial_call_count[0] += 1
+        if initial_call_count[0] == 1:
+            return {
+                "headRefOid": "a1b2c3",
+                "statusCheckRollup": [
+                    {"name": "unit", "status": "IN_PROGRESS", "conclusion": None}
+                ],
+                "reviews": [],
+            }, []
+        return always_fail(repo, pr_number)
+
+    monkeypatch.setattr("pr_watch._fetch", fetching_initial)
+    monkeypatch.setattr("pr_watch.time.sleep", lambda x: None)
+
+    # Capture stdout to check the error event
+    captured_output = []
+    original_print = __builtins__['print']
+    monkeypatch.setattr("builtins.print", lambda x: captured_output.append(x))
+
+    result = main(["--repo", "a/b", "--pr", "1", "--await", "checks", "--deadline", "10000"])
+    assert result == 1
+    assert len(captured_output) == 1
+    event = json.loads(captured_output[0])
+    assert event["event"] == "error"
+    assert event["consecutive"] == 5  # Exactly 5
+
+
+def test_main_resilience_counter_resets_on_success(monkeypatch):
+    """3 fails, 1 success with new state, 1 more fail → returns 0 (success before 5 fails).
+
+    GUARDS: counter reset on successful _fetch prevents premature error termination.
+    WOULD FAIL if: counter never reset (would accumulate past 5 and emit error).
+    """
+    from pr_watch import main
+    import json
+
+    fetch_call_count = [0]
+
+    def fetching_pattern(repo, pr_number):
+        fetch_call_count[0] += 1
+        # Initial (1): PENDING
+        # Calls 2-4: fail (3 consecutive)
+        # Call 5: success with state change (counter resets to 0)
+        if fetch_call_count[0] == 1:
+            return {
+                "headRefOid": "a1b2c3",
+                "statusCheckRollup": [
+                    {"name": "unit", "status": "IN_PROGRESS", "conclusion": None}
+                ],
+                "reviews": [],
+            }, []
+        if fetch_call_count[0] in {2, 3, 4}:
+            raise gh.GhError(502, "Bad Gateway")
+        if fetch_call_count[0] == 5:
+            # Success: state changed to SUCCESS (settles the awaited key)
+            return {
+                "headRefOid": "a1b2c3",
+                "statusCheckRollup": [
+                    {"name": "unit", "status": "COMPLETED", "conclusion": "SUCCESS"}
+                ],
+                "reviews": [],
+            }, []
+        raise gh.GhError(502, "Bad Gateway")
+
+    monkeypatch.setattr("pr_watch._fetch", fetching_pattern)
+    monkeypatch.setattr("pr_watch.time.sleep", lambda x: None)
+
+    result = main(["--repo", "a/b", "--pr", "1", "--await", "checks", "--deadline", "10000"])
+    # Should return 0 because state changed on call 5 (before reaching 5 consecutive failures)
+    assert result == 0
 
 
 # Finding 3: settled state detection
@@ -968,11 +1058,88 @@ def test_settled_event_threads_nonzero_not_settled():
     assert event is None
 
 
-def test_deadline_includes_snapshot():
-    """Deadline event includes current snapshot."""
-    # This is tested implicitly via main's behavior
-    # but we can add a unit test for the output format
-    pass
+def test_deadline_event_includes_snapshot(monkeypatch):
+    """Deadline exceeded → returns 1, event includes snapshot and awaited keys.
+
+    GUARDS: snapshot included in deadline event, event == "deadline", awaited preserved.
+    WOULD FAIL if: snapshot key removed, event type changed, or awaited list dropped.
+    """
+    from pr_watch import main
+    import json
+
+    # Mock time to jump past deadline immediately
+    time_sequence = [0, 1000]  # First call returns 0, second jumps to 1000
+    time_calls = [0]
+
+    def fake_monotonic():
+        result = time_sequence[time_calls[0]]
+        time_calls[0] += 1
+        return result
+
+    # Initial snapshot: PENDING (not settled)
+    def fetching_once(repo, pr_number):
+        return {
+            "headRefOid": "abc123",
+            "statusCheckRollup": [
+                {"name": "ci", "status": "IN_PROGRESS", "conclusion": None}
+            ],
+            "reviews": [
+                {"author": {"login": "bot"}, "state": "COMMENTED", "submittedAt": "2026-08-17T10:00:00Z"}
+            ],
+        }, []
+
+    monkeypatch.setattr("pr_watch._fetch", fetching_once)
+    monkeypatch.setattr("pr_watch.time.monotonic", fake_monotonic)
+    monkeypatch.setattr("pr_watch.time.sleep", lambda x: None)
+
+    captured_output = []
+    monkeypatch.setattr("builtins.print", lambda x: captured_output.append(x))
+
+    result = main(["--repo", "a/b", "--pr", "1", "--await", "checks", "--deadline", "100"])
+    assert result == 1
+    assert len(captured_output) == 1
+    event = json.loads(captured_output[0])
+    assert event["event"] == "deadline"
+    assert "snapshot" in event
+    assert event["snapshot"]["head"] == "abc123"
+    assert event["snapshot"]["checks"] == "PENDING"
+    assert event["awaited"] == ["checks"]
+
+
+# StatusContext unrecognized state should be PENDING (fail-open)
+
+def test_snapshot_statuscontext_unrecognized_state_is_pending():
+    """StatusContext with unrecognized state → checks PENDING (fail-open).
+
+    GUARDS: unrecognized states treated as pending, not passing.
+    WOULD FAIL if: unrecognized states fall through to "SUCCESS".
+    """
+    pr = {
+        "headRefOid": "a1b2c3",
+        "statusCheckRollup": [
+            {"context": "ci/unknown", "state": "QUEUED"},  # Unrecognized
+        ],
+        "reviews": [],
+    }
+    snap = snapshot(pr, [])
+    assert snap["checks"] == "PENDING"
+
+
+def test_snapshot_statuscontext_none_state_is_pending():
+    """StatusContext with state=None → checks PENDING.
+
+    GUARDS: None state treated as pending, not passing.
+    WOULD FAIL if: None state falls through to "SUCCESS".
+    """
+    pr = {
+        "headRefOid": "a1b2c3",
+        "statusCheckRollup": [
+            {"context": "ci/broken", "state": None},
+        ],
+        "reviews": [],
+    }
+    snap = snapshot(pr, [])
+    assert snap["checks"] == "PENDING"
 
 
 # Finding 4: skip COMMENTED reviews when folding
