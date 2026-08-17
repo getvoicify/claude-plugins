@@ -1,4 +1,12 @@
-"""Drift detection, sweep planning and the completion predicate. No I/O."""
+"""Drift detection, sweep planning and the completion predicate. The pure
+functions below do no I/O; `main()` is the thin impure shell and is
+read-only — it never mutates anything (`--sweep` execution belongs to the
+driver, not this script)."""
+import argparse
+import json
+import sys
+
+import gh
 
 
 def epic_complete(children):
@@ -35,3 +43,110 @@ def sweep_plan(children):
         for c in sorted(children or [], key=lambda c: c["number"])
         if (c.get("pr") or {}).get("state") == "MERGED" and c.get("branch")
     ]
+
+
+_ISSUE_QUERY = """
+query($owner:String!,$name:String!,$epic:Int!){
+  repository(owner:$owner,name:$name){
+    issue(number:$epic){
+      state
+      projectItems(first:5){
+        nodes{ status: fieldValueByName(name:"Status"){... on ProjectV2ItemFieldSingleSelectValue{name}} }
+      }
+      subIssues(first:100){
+        nodes{
+          number state
+          projectItems(first:5){
+            nodes{ status: fieldValueByName(name:"Status"){... on ProjectV2ItemFieldSingleSelectValue{name}} }
+          }
+        }
+      }
+    }
+  }
+}
+"""
+
+_PR_MAP_QUERY = """
+query($owner:String!,$name:String!){
+  repository(owner:$owner,name:$name){
+    pullRequests(first:100, orderBy:{field:UPDATED_AT, direction:DESC}){
+      nodes{ number state headRefName closingIssuesReferences(first:100){nodes{number}} }
+    }
+  }
+}
+"""
+
+
+def _project_status(project_items):
+    for node in (project_items or {}).get("nodes") or []:
+        value = node.get("status")
+        if value and value.get("name"):
+            return value["name"]
+    return None
+
+
+def _fetch_pr_map(repo):
+    owner, name = repo.split("/")
+    data = gh.graphql(_PR_MAP_QUERY, owner=owner, name=name)
+    prs = data["repository"]["pullRequests"]["nodes"]
+    mapping = {}
+    for pr in prs:
+        for closes in (pr.get("closingIssuesReferences") or {}).get("nodes") or []:
+            mapping.setdefault(closes["number"], pr)
+    return mapping
+
+
+def _fetch(repo, epic):
+    owner, name = repo.split("/")
+    data = gh.graphql(_ISSUE_QUERY, owner=owner, name=name, epic=epic)
+    issue = data["repository"]["issue"]
+    epic_dict = {"state": issue["state"], "status": _project_status(issue.get("projectItems"))}
+
+    children = []
+    for node in issue["subIssues"]["nodes"]:
+        children.append({
+            "number": node["number"],
+            "state": node["state"],
+            "status": _project_status(node.get("projectItems")),
+        })
+
+    pr_map = _fetch_pr_map(repo)
+    for child in children:
+        pr = pr_map.get(child["number"])
+        if pr:
+            child["pr"] = {"state": pr["state"]}
+            child["branch"] = pr.get("headRefName")
+        else:
+            child["pr"] = None
+            child["branch"] = None
+
+    return children, epic_dict
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description="Report epic status, drift, and sweep plan.")
+    parser.add_argument("--epic", type=int, required=True)
+    parser.add_argument("--repo", required=True)
+    parser.add_argument("--sweep-plan", action="store_true",
+                         help="include what --sweep would change (read-only; never mutates)")
+    args = parser.parse_args(argv)
+
+    try:
+        children, epic = _fetch(args.repo, args.epic)
+    except gh.GhError as err:
+        message = err.stderr or str(err)
+        print(json.dumps({"error": message}))
+        sys.stderr.write(message + "\n")
+        return 2
+
+    result = {
+        "complete": epic_complete(children),
+        "drift": drift(children, epic),
+        "sweep_plan": sweep_plan(children) if args.sweep_plan else [],
+    }
+    print(json.dumps(result))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

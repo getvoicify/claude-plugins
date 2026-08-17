@@ -1237,3 +1237,728 @@ def test_sweep_plan_skips_merged_pr_without_branch():
 
 def test_epic_complete_empty_list_is_true():
     assert epic_complete([]) is True
+
+
+# Task 18: CLI entry points for the deterministic core.
+#
+# Every module gets a thin main(argv=None) -> int shell: parse args, fetch via
+# gh (monkeypatched below — never a real network/gh call), call the existing
+# pure function, print one JSON object, return an exit code (0 success, 1
+# definite-negative, 2 usage/config error). Also: preflight's new
+# `invalid-start` violation, and schedule's opened_at wiring.
+
+import gh as gh_module
+
+
+# --- gh.py: new I/O primitives (git facts + repo resolution) ---------------
+
+def test_run_git_returns_stdout_text(monkeypatch):
+    def fake_check_output(args, text, cwd, stderr):
+        assert args[0] == "git"
+        return "worktree /repo\nbranch refs/heads/main\n"
+    monkeypatch.setattr(gh_module.subprocess, "check_output", fake_check_output)
+    assert "worktree /repo" in gh_module.run_git(["worktree", "list", "--porcelain"])
+
+
+def test_run_git_raises_gherror_on_failure(monkeypatch):
+    def fake_check_output(args, text, cwd, stderr):
+        raise subprocess.CalledProcessError(128, args, stderr="not a git repository")
+    monkeypatch.setattr(gh_module.subprocess, "check_output", fake_check_output)
+    with pytest.raises(gh.GhError):
+        gh_module.run_git(["status"])
+
+
+@pytest.mark.parametrize(
+    "url, expected",
+    [
+        ("git@github.com:acme/planning.git", "acme/planning"),
+        ("https://github.com/acme/planning.git", "acme/planning"),
+        ("https://github.com/acme/planning", "acme/planning"),
+    ],
+)
+def test_resolve_repo_from_cwd_parses_origin_url(monkeypatch, url, expected):
+    monkeypatch.setattr(gh_module, "run_git", lambda args, cwd=None: url + "\n")
+    assert gh_module.resolve_repo_from_cwd() == expected
+
+
+def test_resolve_repo_from_cwd_raises_on_unparseable_url(monkeypatch):
+    # GUARDS: the regex-match / raise branch. WOULD FAIL if the raise were
+    # deleted (an unparseable URL would then crash later with a confusing
+    # AttributeError/TypeError instead of a clean GhError).
+    monkeypatch.setattr(gh_module, "run_git", lambda args, cwd=None: "not-a-url\n")
+    with pytest.raises(gh.GhError):
+        gh_module.resolve_repo_from_cwd()
+
+
+# --- preflight.py: invalid-start violation on check() -----------------------
+
+def test_check_flags_invalid_start_when_true():
+    # GUARDS: the `if invalid_start:` branch itself. WOULD FAIL if the branch
+    # were deleted or the code string were misspelled.
+    assert check("dark-mode", 12, [], 3, False, invalid_start=True) == ["invalid-start"]
+
+
+def test_check_invalid_start_defaults_to_false():
+    # GUARDS: the default value of the new parameter. WOULD FAIL if the
+    # default were flipped to True (every existing 5-arg caller would then
+    # spuriously fail).
+    assert check("dark-mode", 12, [], 3, False) == []
+
+
+def test_check_invalid_start_combines_and_sorts_with_other_violations():
+    # GUARDS: sorted() still applied after adding the 5th code, and the code
+    # combines rather than short-circuits. WOULD FAIL if sorted() were removed
+    # (list would come back in append order: worktree-exists, concurrency-cap,
+    # nested-worktree, invalid-start) or if invalid_start were ignored when
+    # other violations exist.
+    result = check("dark-mode", 1, ["dark-mode-1"], 1, True, invalid_start=True)
+    assert result == [
+        "concurrency-cap",
+        "invalid-start",
+        "nested-worktree",
+        "worktree-exists",
+    ]
+
+
+# --- preflight.py: CLI --------------------------------------------------
+
+def _porcelain(entries):
+    """Build `git worktree list --porcelain` text from (path, branch, detached) triples."""
+    lines = []
+    for path, branch, detached in entries:
+        lines.append(f"worktree {path}")
+        if detached:
+            lines.append("detached")
+        else:
+            lines.append(f"branch refs/heads/{branch}")
+        lines.append("")
+    return "\n".join(lines) + "\n"
+
+
+def test_preflight_main_prints_empty_violations_and_exits_zero(monkeypatch):
+    import os
+    from preflight import main
+
+    cwd = os.getcwd()
+    porcelain = _porcelain([(cwd, "feature-xyz", False)])
+    monkeypatch.setattr(gh_module, "run_git", lambda args, cwd=None: porcelain)
+    monkeypatch.setattr(
+        gh_module, "run_json", lambda args, cwd=None: {"defaultBranchRef": {"name": "main"}}
+    )
+    captured = []
+    monkeypatch.setattr("builtins.print", lambda x: captured.append(x))
+
+    rc = main(["--prefix", "dark-mode", "--child", "12", "--max-concurrent", "3"])
+    assert rc == 0
+    assert json.loads(captured[0]) == {"violations": []}
+
+
+def test_preflight_main_flags_invalid_start_when_cwd_is_on_default_branch(monkeypatch):
+    # GUARDS: the wiring from git facts -> invalid_start -> check(). WOULD
+    # FAIL if main() stopped passing invalid_start through to check(), or if
+    # the default-branch comparison used the wrong field.
+    import os
+    from preflight import main
+
+    cwd = os.getcwd()
+    porcelain = _porcelain([(cwd, "main", False)])
+    monkeypatch.setattr(gh_module, "run_git", lambda args, cwd=None: porcelain)
+    monkeypatch.setattr(
+        gh_module, "run_json", lambda args, cwd=None: {"defaultBranchRef": {"name": "main"}}
+    )
+    captured = []
+    monkeypatch.setattr("builtins.print", lambda x: captured.append(x))
+
+    rc = main(["--prefix", "dark-mode", "--child", "12", "--max-concurrent", "3"])
+    assert rc == 1
+    assert json.loads(captured[0]) == {"violations": ["invalid-start"]}
+
+
+def test_preflight_main_exits_two_on_gherror(monkeypatch):
+    from preflight import main
+
+    def raise_gherror(args, cwd=None):
+        raise gh.GhError(128, "fatal: not a git repository")
+    monkeypatch.setattr(gh_module, "run_git", raise_gherror)
+    captured = []
+    monkeypatch.setattr("builtins.print", lambda x: captured.append(x))
+
+    rc = main(["--prefix", "dark-mode", "--child", "12", "--max-concurrent", "3"])
+    assert rc == 2
+    assert "error" in json.loads(captured[0])
+
+
+# --- config.py: CLI ------------------------------------------------------
+
+BODY_NO_PROJECT = """Some prose.
+
+```epic-config
+epic: 42
+repo: acme/planning
+docs_repo: acme/app
+worktree_prefix: dark-mode
+spec: docs/dark-mode.md
+runbook: docs/dark-mode-runbook.md
+```
+
+More prose.
+"""
+
+
+def test_config_main_resolves_and_prints_config(monkeypatch, tmp_path):
+    from config import main
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".agents").mkdir()
+    (tmp_path / ".agents" / "epic.yaml").write_text("planning:\n  project: 9\n", encoding="utf-8")
+
+    monkeypatch.setattr(gh_module, "run_json", lambda args, cwd=None: {"body": BODY})
+    captured = []
+    monkeypatch.setattr("builtins.print", lambda x: captured.append(x))
+
+    rc = main(["--epic", "42", "--repo", "acme/planning"])
+    assert rc == 0
+    result = json.loads(captured[0])
+    assert result["epic"] == 42
+    assert result["worktree_prefix"] == "dark-mode"
+    # D4 order: epic-config.project (7) wins over planning.project (9).
+    assert result["project"] == 7
+
+
+def test_config_main_falls_back_to_planning_project(monkeypatch, tmp_path):
+    # GUARDS: main() passing (epic_cfg, planning) to resolve_project in the
+    # documented order. WOULD FAIL if main() hardcoded epic-config's project
+    # or never read Layer 2's `planning.project` at all — the epic-config here
+    # has NO project field, so only the Layer-2 fallback can supply 9.
+    from config import main
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".agents").mkdir()
+    (tmp_path / ".agents" / "epic.yaml").write_text("planning:\n  project: 9\n", encoding="utf-8")
+
+    monkeypatch.setattr(gh_module, "run_json", lambda args, cwd=None: {"body": BODY_NO_PROJECT})
+    captured = []
+    monkeypatch.setattr("builtins.print", lambda x: captured.append(x))
+
+    rc = main(["--epic", "42", "--repo", "acme/planning"])
+    assert rc == 0
+    assert json.loads(captured[0])["project"] == 9
+
+
+def test_config_main_exits_two_on_config_error(monkeypatch, tmp_path):
+    from config import main
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".agents").mkdir()
+    (tmp_path / ".agents" / "epic.yaml").write_text("planning:\n  project: 9\n", encoding="utf-8")
+
+    monkeypatch.setattr(gh_module, "run_json", lambda args, cwd=None: {"body": "no config here"})
+    captured = []
+    monkeypatch.setattr("builtins.print", lambda x: captured.append(x))
+
+    rc = main(["--epic", "42", "--repo", "acme/planning"])
+    assert rc == 2
+    assert "error" in json.loads(captured[0])
+
+
+def test_config_main_exits_two_when_no_layer2_yaml(monkeypatch, tmp_path):
+    # GUARDS: the missing-epic.yaml ConfigError path specifically (as opposed
+    # to a generic crash). WOULD FAIL if main() let a bare FileNotFoundError
+    # propagate instead of catching ConfigError and exiting 2 cleanly.
+    from config import main
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(gh_module, "run_json", lambda args, cwd=None: {"body": BODY})
+    captured = []
+    monkeypatch.setattr("builtins.print", lambda x: captured.append(x))
+
+    rc = main(["--epic", "42", "--repo", "acme/planning"])
+    assert rc == 2
+    assert "error" in json.loads(captured[0])
+
+
+def test_config_main_exits_two_on_gherror(monkeypatch, tmp_path):
+    from config import main
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".agents").mkdir()
+    (tmp_path / ".agents" / "epic.yaml").write_text("planning:\n  project: 9\n", encoding="utf-8")
+
+    def raise_gherror(args, cwd=None):
+        raise gh.GhError(1, "issue not found")
+    monkeypatch.setattr(gh_module, "run_json", raise_gherror)
+    captured = []
+    monkeypatch.setattr("builtins.print", lambda x: captured.append(x))
+
+    rc = main(["--epic", "42", "--repo", "acme/planning"])
+    assert rc == 2
+    assert "error" in json.loads(captured[0])
+
+
+# --- mergeability.py: CLI -------------------------------------------------
+
+def test_mergeability_main_reports_clean_and_exits_zero(monkeypatch):
+    from mergeability import main
+
+    def fake_run_json(args, cwd=None):
+        if args[:2] == ["pr", "view"]:
+            return {"mergeStateStatus": "CLEAN", "isDraft": False,
+                     "statusCheckRollup": [], "reviewDecision": "APPROVED"}
+        if args[0] == "api":
+            return []  # empty ruleset
+        raise AssertionError(f"unexpected run_json call: {args}")
+    monkeypatch.setattr(gh_module, "run_json", fake_run_json)
+    monkeypatch.setattr(
+        gh_module, "graphql",
+        lambda query, **kw: {"repository": {"pullRequest": {"reviewThreads": {"nodes": []}}}},
+    )
+    captured = []
+    monkeypatch.setattr("builtins.print", lambda x: captured.append(x))
+
+    rc = main(["--repo", "acme/app", "--pr", "7"])
+    assert rc == 0
+    assert json.loads(captured[0]) == {"requirements": [], "clean": True}
+
+
+def test_mergeability_main_reports_unmet_and_exits_one(monkeypatch):
+    from mergeability import main
+
+    def fake_run_json(args, cwd=None):
+        if args[:2] == ["pr", "view"]:
+            return {"mergeStateStatus": "BEHIND", "isDraft": False,
+                     "statusCheckRollup": [], "reviewDecision": "APPROVED"}
+        if args[0] == "api":
+            return []
+        raise AssertionError(f"unexpected run_json call: {args}")
+    monkeypatch.setattr(gh_module, "run_json", fake_run_json)
+    monkeypatch.setattr(
+        gh_module, "graphql",
+        lambda query, **kw: {"repository": {"pullRequest": {"reviewThreads": {"nodes": []}}}},
+    )
+    captured = []
+    monkeypatch.setattr("builtins.print", lambda x: captured.append(x))
+
+    rc = main(["--repo", "acme/app", "--pr", "7"])
+    assert rc == 1
+    result = json.loads(captured[0])
+    assert result["clean"] is False
+    assert result["requirements"][0]["code"] == "behind-base"
+
+
+def test_mergeability_main_treats_404_ruleset_as_empty(monkeypatch):
+    # GUARDS: the 404-swallowing branch in _fetch. WOULD FAIL if the 404
+    # GhError were re-raised instead of treated as an empty ruleset — the CLI
+    # would exit 2 on every repo with no branch-protection ruleset configured
+    # at all, which the brief explicitly says is not an error.
+    from mergeability import main
+
+    def fake_run_json(args, cwd=None):
+        if args[:2] == ["pr", "view"]:
+            return {"mergeStateStatus": "CLEAN", "isDraft": False,
+                     "statusCheckRollup": [], "reviewDecision": "APPROVED"}
+        if args[0] == "api":
+            raise gh.GhError(1, "HTTP 404: Not Found")
+        raise AssertionError(f"unexpected run_json call: {args}")
+    monkeypatch.setattr(gh_module, "run_json", fake_run_json)
+    monkeypatch.setattr(
+        gh_module, "graphql",
+        lambda query, **kw: {"repository": {"pullRequest": {"reviewThreads": {"nodes": []}}}},
+    )
+    captured = []
+    monkeypatch.setattr("builtins.print", lambda x: captured.append(x))
+
+    rc = main(["--repo", "acme/app", "--pr", "7"])
+    assert rc == 0
+    assert json.loads(captured[0]) == {"requirements": [], "clean": True}
+
+
+def test_mergeability_main_exits_two_on_non_404_gherror(monkeypatch):
+    from mergeability import main
+
+    def fake_run_json(args, cwd=None):
+        if args[:2] == ["pr", "view"]:
+            raise gh.GhError(1, "HTTP 500: Internal Server Error")
+        raise AssertionError(f"unexpected run_json call: {args}")
+    monkeypatch.setattr(gh_module, "run_json", fake_run_json)
+    captured = []
+    monkeypatch.setattr("builtins.print", lambda x: captured.append(x))
+
+    rc = main(["--repo", "acme/app", "--pr", "7"])
+    assert rc == 2
+    assert "error" in json.loads(captured[0])
+
+
+# --- converge.py: CLI ------------------------------------------------------
+
+def test_converge_main_reads_files_and_exits_zero_on_converged(tmp_path):
+    from converge import main
+
+    prev = tmp_path / "prev.json"
+    curr = tmp_path / "curr.json"
+    prev.write_text(json.dumps([{"file": "a.py", "category": "bug", "claim": "x", "blocking": True}]))
+    curr.write_text(json.dumps([]))
+
+    result = _run_and_capture(main, ["--prev", str(prev), "--curr", str(curr)])
+    assert result.rc == 0
+    assert json.loads(result.out) == {"verdict": "converged"}
+
+
+def test_converge_main_exits_one_on_no_progress(tmp_path):
+    from converge import main
+
+    finding = [{"file": "a.py", "category": "bug", "claim": "x", "blocking": True}]
+    prev = tmp_path / "prev.json"
+    curr = tmp_path / "curr.json"
+    prev.write_text(json.dumps(finding))
+    curr.write_text(json.dumps(finding))
+
+    result = _run_and_capture(main, ["--prev", str(prev), "--curr", str(curr)])
+    assert result.rc == 1
+    assert json.loads(result.out) == {"verdict": "no_progress"}
+
+
+def test_converge_main_exits_two_on_missing_file(tmp_path):
+    from converge import main
+
+    curr = tmp_path / "curr.json"
+    curr.write_text("[]")
+
+    result = _run_and_capture(main, ["--prev", str(tmp_path / "missing.json"), "--curr", str(curr)])
+    assert result.rc == 2
+    assert "error" in json.loads(result.out)
+
+
+class _CapturedRun:
+    def __init__(self, rc, out):
+        self.rc = rc
+        self.out = out
+
+
+def _run_and_capture(main_fn, argv):
+    captured = []
+    real_print = print
+    import builtins
+    builtins.print = lambda x: captured.append(x)
+    try:
+        rc = main_fn(argv)
+    finally:
+        builtins.print = real_print
+    return _CapturedRun(rc, captured[0] if captured else "")
+
+
+# --- verify_pin.py: CLI ----------------------------------------------------
+
+PIN_TEXT = """Pin notes.
+
+- verified: epic/scripts/gh.py@main#run_json — run_json shells to gh
+- assumption: the API rate limit resets hourly
+"""
+
+PIN_TEXT_STALE = """Pin notes.
+
+- verified: epic/scripts/gh.py@main#totally_missing_symbol — this symbol exists
+"""
+
+
+def test_verify_pin_main_classifies_claims_and_exits_zero(monkeypatch, tmp_path):
+    from verify_pin import main
+
+    pin_file = tmp_path / "pin.md"
+    pin_file.write_text(PIN_TEXT, encoding="utf-8")
+
+    def fake_run_json(args, cwd=None):
+        assert args[0] == "api"
+        import base64
+        return {"content": base64.b64encode(b"def run_json(): pass\n").decode()}
+    monkeypatch.setattr(gh_module, "run_json", fake_run_json)
+    captured = []
+    monkeypatch.setattr("builtins.print", lambda x: captured.append(x))
+
+    rc = main(["--pin", str(pin_file), "--repo", "acme/app"])
+    assert rc == 0
+    result = json.loads(captured[0])
+    verdicts = {c["verdict"] for c in result["claims"]}
+    assert verdicts == {"verified", "assumption"}
+
+
+def test_verify_pin_main_exits_one_when_any_claim_stale(monkeypatch, tmp_path):
+    from verify_pin import main
+
+    pin_file = tmp_path / "pin.md"
+    pin_file.write_text(PIN_TEXT_STALE, encoding="utf-8")
+
+    def fake_run_json(args, cwd=None):
+        import base64
+        return {"content": base64.b64encode(b"def run_json(): pass\n").decode()}
+    monkeypatch.setattr(gh_module, "run_json", fake_run_json)
+    captured = []
+    monkeypatch.setattr("builtins.print", lambda x: captured.append(x))
+
+    rc = main(["--pin", str(pin_file), "--repo", "acme/app"])
+    assert rc == 1
+    result = json.loads(captured[0])
+    assert result["claims"][0]["verdict"] == "stale"
+
+
+def test_verify_pin_main_unresolvable_path_is_unverifiable_not_error(monkeypatch, tmp_path):
+    # GUARDS: the distinction the brief calls load-bearing — a content-fetch
+    # 404 must classify as "unverifiable" and exit 0/1 normally, never surface
+    # as a CLI error (exit 2). WOULD FAIL if a GhError from the content fetch
+    # were allowed to propagate out of main() uncaught.
+    from verify_pin import main
+
+    pin_file = tmp_path / "pin.md"
+    pin_file.write_text(PIN_TEXT, encoding="utf-8")
+
+    def raise_404(args, cwd=None):
+        raise gh.GhError(1, "HTTP 404: Not Found")
+    monkeypatch.setattr(gh_module, "run_json", raise_404)
+    captured = []
+    monkeypatch.setattr("builtins.print", lambda x: captured.append(x))
+
+    rc = main(["--pin", str(pin_file), "--repo", "acme/app"])
+    assert rc == 0
+    result = json.loads(captured[0])
+    verdicts = {c["verdict"] for c in result["claims"]}
+    assert verdicts == {"unverifiable", "assumption"}
+
+
+def test_verify_pin_main_resolves_repo_from_cwd_when_not_given(monkeypatch, tmp_path):
+    # GUARDS: the SKILL.md-literal invocation `verify_pin.py --pin <file>`
+    # with NO --repo. WOULD FAIL if --repo were made required (argparse would
+    # error out before this ever ran), which is exactly the failure mode the
+    # brief warns the whole task is about.
+    from verify_pin import main
+
+    pin_file = tmp_path / "pin.md"
+    pin_file.write_text(PIN_TEXT, encoding="utf-8")
+
+    monkeypatch.setattr(gh_module, "resolve_repo_from_cwd", lambda cwd=None: "acme/app")
+
+    def fake_run_json(args, cwd=None):
+        import base64
+        return {"content": base64.b64encode(b"def run_json(): pass\n").decode()}
+    monkeypatch.setattr(gh_module, "run_json", fake_run_json)
+    captured = []
+    monkeypatch.setattr("builtins.print", lambda x: captured.append(x))
+
+    rc = main(["--pin", str(pin_file)])
+    assert rc == 0
+
+
+def test_verify_pin_main_exits_two_on_missing_pin_file(tmp_path):
+    from verify_pin import main
+
+    captured = []
+    result = _run_and_capture(main, ["--pin", str(tmp_path / "missing.md"), "--repo", "acme/app"])
+    assert result.rc == 2
+    assert "error" in json.loads(result.out)
+
+
+# --- schedule.py: CLI --------------------------------------------------
+
+def test_schedule_main_prints_wave_queue_and_halt(monkeypatch):
+    from schedule import main
+
+    children_resp = {
+        "repository": {"issue": {"subIssues": {"nodes": [
+            {"number": 3, "state": "OPEN", "blockedBy": {"nodes": []},
+             "projectItems": {"nodes": [{"status": {"name": "Todo"}, "priority": None}]}},
+        ]}}}
+    }
+    pr_map_resp = {"repository": {"pullRequests": {"nodes": []}}}
+    graphql_calls = iter([children_resp, pr_map_resp])
+    monkeypatch.setattr(gh_module, "graphql", lambda query, **kw: next(graphql_calls))
+    monkeypatch.setattr(gh_module, "run_json", lambda args, cwd=None: (_ for _ in ()).throw(
+        AssertionError(f"unexpected run_json: {args}")))
+    captured = []
+    monkeypatch.setattr("builtins.print", lambda x: captured.append(x))
+
+    rc = main(["--epic", "42", "--repo", "acme/planning"])
+    assert rc == 0
+    result = json.loads(captured[0])
+    assert result["wave"] == [3]
+    assert result["merge_queue"] == []
+    assert result["halt"] is None
+
+
+def test_schedule_main_populates_opened_at_from_pr_view(monkeypatch):
+    # GUARDS: the exact wiring the task calls out as "only half-effective
+    # until the CLI supplies the field" — a child whose PR has no gates
+    # recorded must still enter the merge queue via the opened_at fallback.
+    # WOULD FAIL if main()/_populate_prs stopped calling `gh pr view --json
+    # createdAt` (opened_at would stay None, became_ready_at would return
+    # None for an otherwise-clean PR, and the child would silently vanish
+    # from merge_queue instead of appearing).
+    from schedule import main
+
+    children_resp = {
+        "repository": {"issue": {"subIssues": {"nodes": [
+            {"number": 3, "state": "OPEN", "blockedBy": {"nodes": []},
+             "projectItems": {"nodes": [{"status": {"name": "In Review"}, "priority": None}]}},
+        ]}}}
+    }
+    pr_map_resp = {"repository": {"pullRequests": {"nodes": [
+        {"number": 101, "state": "OPEN", "headRefName": "dark-mode-3",
+         "closingIssuesReferences": {"nodes": [{"number": 3}]}},
+    ]}}}
+    graphql_calls = iter([children_resp, pr_map_resp])
+    monkeypatch.setattr(gh_module, "graphql", lambda query, **kw: next(graphql_calls))
+
+    def fake_run_json(args, cwd=None):
+        if args[:2] == ["pr", "view"]:
+            return {"createdAt": "2026-01-01T00:00:00Z"}
+        if args[:2] == ["issue", "view"]:
+            return {"comments": []}
+        raise AssertionError(f"unexpected run_json: {args}")
+    monkeypatch.setattr(gh_module, "run_json", fake_run_json)
+    captured = []
+    monkeypatch.setattr("builtins.print", lambda x: captured.append(x))
+
+    rc = main(["--epic", "42", "--repo", "acme/planning"])
+    assert rc == 0
+    result = json.loads(captured[0])
+    # Gate-free (empty gates dict) child with an open PR still reaches the
+    # merge queue only because opened_at was populated for the FIFO fallback.
+    assert result["merge_queue"] == [3]
+
+
+def test_schedule_main_reports_halt_from_parks(monkeypatch):
+    from schedule import main
+
+    def make_child(n):
+        return {"number": n, "state": "OPEN", "blockedBy": {"nodes": []},
+                "projectItems": {"nodes": [{"status": {"name": "Parked"}, "priority": None}]}}
+
+    children_resp = {
+        "repository": {"issue": {"subIssues": {"nodes": [make_child(n) for n in (1, 2, 3)]}}}
+    }
+    pr_map_resp = {"repository": {"pullRequests": {"nodes": []}}}
+    graphql_calls = iter([children_resp, pr_map_resp])
+    monkeypatch.setattr(gh_module, "graphql", lambda query, **kw: next(graphql_calls))
+
+    park_comment = {
+        "body": (
+            "FAILED: ci-fix-loop stuck on flaky test\n\n"
+            'epic-park: {"code":"stall","gate":"ci-fix-loop","signature":"abc123",'
+            '"waiting_on_human":false}'
+        )
+    }
+
+    def fake_run_json(args, cwd=None):
+        assert args[:2] == ["issue", "view"]
+        return {"comments": [park_comment]}
+    monkeypatch.setattr(gh_module, "run_json", fake_run_json)
+    captured = []
+    monkeypatch.setattr("builtins.print", lambda x: captured.append(x))
+
+    rc = main(["--epic", "42", "--repo", "acme/planning"])
+    assert rc == 1
+    result = json.loads(captured[0])
+    assert result["halt"] is not None
+    assert result["halt"].startswith("systemic:")
+
+
+def test_schedule_main_exits_two_on_gherror(monkeypatch):
+    from schedule import main
+
+    def raise_gherror(query, **kw):
+        raise gh.GhError(1, "epic not found")
+    monkeypatch.setattr(gh_module, "graphql", raise_gherror)
+    captured = []
+    monkeypatch.setattr("builtins.print", lambda x: captured.append(x))
+
+    rc = main(["--epic", "42", "--repo", "acme/planning"])
+    assert rc == 2
+    assert "error" in json.loads(captured[0])
+
+
+# --- status.py: CLI ---------------------------------------------------
+
+def test_status_main_reports_complete_and_drift(monkeypatch):
+    from status import main
+
+    data = {
+        "repository": {"issue": {
+            "state": "OPEN",
+            "projectItems": {"nodes": [{"status": {"name": "In Progress"}}]},
+            "subIssues": {"nodes": [
+                {"number": 3, "state": "CLOSED",
+                 "projectItems": {"nodes": [{"status": {"name": "In Review"}}]}},
+            ]},
+        }}
+    }
+    captured = []
+    monkeypatch.setattr("builtins.print", lambda x: captured.append(x))
+
+    # graphql is called twice by status.py's own design (issue+children, then
+    # a separate PR-map query) — supply both via a queue instead of a single
+    # fixed return value.
+    responses = iter([data, {"repository": {"pullRequests": {"nodes": []}}}])
+    monkeypatch.setattr(gh_module, "graphql", lambda query, **kw: next(responses))
+
+    rc = main(["--epic", "42", "--repo", "acme/planning"])
+    assert rc == 0
+    result = json.loads(captured[0])
+    # The one child is CLOSED, so the epic is complete — but its Status field
+    # still says "In Review" instead of "Done", which is exactly the drift
+    # reality-vs-Project-field case drift() reports.
+    assert result["complete"] is True
+    assert result["drift"] == [
+        {"target": "child:3", "field": "status", "actual": "In Review", "expected": "Done"}
+    ]
+    assert result["sweep_plan"] == []
+
+
+def test_status_main_sweep_plan_only_when_flag_passed(monkeypatch):
+    # GUARDS: --sweep-plan gating. WOULD FAIL if sweep_plan were always
+    # computed and returned regardless of the flag, or never computed even
+    # with the flag.
+    from status import main
+
+    data = {
+        "repository": {"issue": {
+            "state": "OPEN",
+            "projectItems": {"nodes": []},
+            "subIssues": {"nodes": [
+                {"number": 3, "state": "CLOSED",
+                 "projectItems": {"nodes": [{"status": {"name": "Done"}}]}},
+            ]},
+        }}
+    }
+    pr_map = {"repository": {"pullRequests": {"nodes": [
+        {"number": 101, "state": "MERGED", "headRefName": "dark-mode-3",
+         "closingIssuesReferences": {"nodes": [{"number": 3}]}},
+    ]}}}
+
+    responses_no_flag = iter([data, pr_map])
+    monkeypatch.setattr(gh_module, "graphql", lambda query, **kw: next(responses_no_flag))
+    captured = []
+    monkeypatch.setattr("builtins.print", lambda x: captured.append(x))
+    rc = main(["--epic", "42", "--repo", "acme/planning"])
+    assert rc == 0
+    assert json.loads(captured[0])["sweep_plan"] == []
+
+    responses_with_flag = iter([data, pr_map])
+    monkeypatch.setattr(gh_module, "graphql", lambda query, **kw: next(responses_with_flag))
+    captured2 = []
+    monkeypatch.setattr("builtins.print", lambda x: captured2.append(x))
+    rc = main(["--epic", "42", "--repo", "acme/planning", "--sweep-plan"])
+    assert rc == 0
+    assert json.loads(captured2[0])["sweep_plan"] == [
+        {"child": 3, "action": "remove-worktree", "branch": "dark-mode-3"}
+    ]
+
+
+def test_status_main_exits_two_on_gherror(monkeypatch):
+    from status import main
+
+    def raise_gherror(query, **kw):
+        raise gh.GhError(1, "epic not found")
+    monkeypatch.setattr(gh_module, "graphql", raise_gherror)
+    captured = []
+    monkeypatch.setattr("builtins.print", lambda x: captured.append(x))
+
+    rc = main(["--epic", "42", "--repo", "acme/planning"])
+    assert rc == 2
+    assert "error" in json.loads(captured[0])
