@@ -1209,9 +1209,14 @@ def test_drift_flags_closed_complete_epic_not_done():
 
 
 def test_drift_does_not_touch_open_epic_status():
-    kid = child(3, 0)
-    kid["status"] = "In Progress"
+    kid = child(3, 0, state="CLOSED")
+    kid["status"] = "Done"
     assert drift([kid], {"state": "OPEN", "status": "In Progress"}) == []
+
+
+def test_drift_does_not_flag_closed_epic_with_open_children():
+    kid = child(3, 0)  # OPEN — epic is closed early, an anomaly
+    assert drift([kid], {"state": "CLOSED", "status": "In Progress"}) == []
 
 
 def test_sweep_plan_removes_worktrees_only_for_merged_prs():
@@ -1222,3 +1227,13 @@ def test_sweep_plan_removes_worktrees_only_for_merged_prs():
     assert sweep_plan([merged, open_pr]) == [
         {"child": 3, "action": "remove-worktree", "branch": "dark-mode-3"}
     ]
+
+
+def test_sweep_plan_skips_merged_pr_without_branch():
+    no_branch = child(3, 0, state="CLOSED",
+                      pr={"number": 101, "state": "MERGED"})
+    assert sweep_plan([no_branch]) == []
+
+
+def test_epic_complete_empty_list_is_true():
+    assert epic_complete([]) is True
