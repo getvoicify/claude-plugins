@@ -316,7 +316,33 @@ Head-SHA keying is what makes it trustworthy: a verdict on a superseded head is
 reported as such rather than mistaken for a verdict on the current one. This
 retires `CI_ESTIMATE`, `MAX_WAIT_CYCLES` and `MERGE_WAIT_CYCLES`; a wait now
 ends at a deadline, and a deadline breach parks with the specific check or
-reviewer that never posted.
+reviewer that never posted — carrying the final snapshot, so a timeout never
+leaves the driver blind about what it was waiting on.
+
+Three properties keep the watcher from reproducing the failure it replaces:
+
+- **It answers immediately when the answer already exists.** Reporting only
+  *transitions* means a gate that reached its final state before the watcher
+  launched — routine, since watching starts after the PR is opened — would never
+  change and the driver would block the whole deadline. So the first snapshot is
+  checked against a terminal-state set before any polling begins, and a settled
+  gate is reported at once, marked as an immediate answer rather than an
+  observed transition.
+- **It survives transient failures.** A single 502 partway through a long CI
+  wait must not end the watch; consecutive failures are counted, tolerated, and
+  only after a bounded run does the watcher give up — with a structured `error`
+  event, never a traceback. An unresilient watcher is precisely the "monitoring
+  sometimes just fails" complaint this design set out to fix.
+- **It reads the payload shapes GitHub actually emits.** `reviews[].author` is
+  an object (`{"login": …}`), not a string, and `statusCheckRollup` mixes
+  CheckRun with legacy StatusContext entries. Both are normalized. Fixtures that
+  invent simpler shapes hide real crashes, and this module is only worth its
+  cost if it is correct against live output.
+
+Review folding is latest-wins per author, but `COMMENTED` reviews are skipped:
+GitHub does not treat a comment as dismissing an approval, and folding one over
+an earlier `APPROVED` would emit a phantom "approval lost" transition and send
+the driver into needless fix-loop work.
 
 ### D8 — Circuit breakers rebuilt for parallelism
 
