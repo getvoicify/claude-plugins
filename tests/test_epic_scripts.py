@@ -461,3 +461,117 @@ def test_missing_approval_is_reported_as_waiting_on_human():
     reqs = requirements(pr, {"required_approving_review_count": 1}, [])
     approval = [r for r in reqs if r["code"] == "approval-missing"][0]
     assert approval["action"] == "park-waiting-on-human"
+
+
+# Defect fixes from review
+
+
+def test_blocked_state_with_no_other_requirements_is_reported():
+    """Finding 1: BLOCKED state without derived requirements returns blocked-unexplained."""
+    pr = {"mergeStateStatus": "BLOCKED", "isDraft": False, "statusCheckRollup": []}
+    reqs = requirements(pr, {}, [])
+    assert codes(reqs) == ["blocked-unexplained:BLOCKED"]
+    assert is_clean(reqs) is False
+
+
+def test_unstable_mergeable_state_not_blocked_unexplained():
+    """Finding 1: UNSTABLE is mergeable, should not emit blocked-unexplained."""
+    pr = {
+        "mergeStateStatus": "UNSTABLE",
+        "isDraft": False,
+        "statusCheckRollup": [
+            {"name": "non-required", "conclusion": "FAILURE", "status": "COMPLETED"}
+        ],
+    }
+    reqs = requirements(pr, {}, [])
+    # UNSTABLE is mergeable; no blocked-unexplained should be emitted
+    assert "blocked-unexplained" not in codes(reqs)
+
+
+def test_approval_missing_reported_without_ruleset_contents():
+    """Finding 2: REVIEW_REQUIRED emits approval-missing independent of ruleset."""
+    pr = {
+        "mergeStateStatus": "BLOCKED",
+        "isDraft": False,
+        "statusCheckRollup": [],
+        "reviewDecision": "REVIEW_REQUIRED",
+    }
+    reqs = requirements(pr, {}, [])
+    assert "approval-missing" in codes(reqs)
+    approval = [r for r in reqs if r["code"] == "approval-missing"][0]
+    assert approval["action"] == "park-waiting-on-human"
+
+
+def test_statuscontext_passing_check():
+    """Finding 3: StatusContext with state SUCCESS is handled."""
+    pr = {
+        "mergeStateStatus": "BLOCKED",
+        "isDraft": False,
+        "statusCheckRollup": [
+            {"context": "commit-status", "state": "SUCCESS"}
+        ],
+    }
+    ruleset = {"required_status_checks": ["commit-status"]}
+    reqs = requirements(pr, ruleset, [])
+    # Passing status context should not emit any check requirement
+    assert "commit-status" not in codes(reqs)
+    # And it should not emit check-missing when it's required
+    assert "check-missing:commit-status" not in codes(reqs)
+
+
+def test_statuscontext_failing_check():
+    """Finding 3: StatusContext with state FAILURE is handled as check-failing."""
+    pr = {
+        "mergeStateStatus": "BLOCKED",
+        "isDraft": False,
+        "statusCheckRollup": [
+            {"context": "commit-status", "state": "FAILURE"}
+        ],
+    }
+    reqs = requirements(pr, {}, [])
+    assert codes(reqs) == ["check-failing:commit-status"]
+
+
+def test_statuscontext_pending_check():
+    """Finding 3: StatusContext with state PENDING is handled as check-pending."""
+    pr = {
+        "mergeStateStatus": "BLOCKED",
+        "isDraft": False,
+        "statusCheckRollup": [
+            {"context": "commit-status", "state": "PENDING"}
+        ],
+    }
+    reqs = requirements(pr, {}, [])
+    assert codes(reqs) == ["check-pending:commit-status"]
+
+
+def test_non_required_check_does_not_gate_when_required_checks_specified():
+    """Finding 4: Non-required checks do not gate merge when ruleset declares required checks."""
+    pr = {
+        "mergeStateStatus": "BLOCKED",
+        "isDraft": False,
+        "statusCheckRollup": [
+            {"name": "non-required", "conclusion": "FAILURE", "status": "COMPLETED"}
+        ],
+    }
+    ruleset = {"required_status_checks": ["required-check"]}
+    reqs = requirements(pr, ruleset, [])
+    # Non-required check should not emit requirement
+    assert "check-failing:non-required" not in codes(reqs)
+    # Should only report missing required check
+    assert codes(reqs) == ["check-missing:required-check"]
+
+
+def test_all_checks_gate_when_required_checks_empty():
+    """Finding 4: All checks gate merge when ruleset has no required checks (fail-closed)."""
+    pr = {
+        "mergeStateStatus": "BLOCKED",
+        "isDraft": False,
+        "statusCheckRollup": [
+            {"name": "any-check", "conclusion": "FAILURE", "status": "COMPLETED"}
+        ],
+    }
+    ruleset = {}
+    reqs = requirements(pr, ruleset, [])
+    # When no required checks are declared, all checks gate (fail-closed)
+    assert codes(reqs) == ["check-failing:any-check"]
