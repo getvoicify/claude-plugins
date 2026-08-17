@@ -154,6 +154,18 @@ A gate that goes red and later clean again resets that child's
 semantic — the child only just became ready, and its earlier readiness was
 withdrawn.
 
+**Gate-free children fall back to PR open time.** A child can be legitimately
+clean with nothing ever having been *cleared*: every gate `na` (`claude-review`
+not in `required_checks` and a Copilot request that 422'd), or a repo with no
+prose gates at all. Such a child has no gate timestamps, so `became_ready_at`
+falls back to the PR's `opened_at` — if nothing gated the PR, it was merge-ready
+the moment it opened, and that is its honest FIFO position. Without this
+fallback the child has no sort key, becomes indistinguishable from one whose
+gates are still pending, and is stranded out of the queue permanently — a
+gate-free repo could never merge anything. `opened_at` comes from
+`gh pr view --json createdAt` on each wake, so the derived-never-stored property
+is unaffected.
+
 The trade accepted here is that Project **Priority** no longer influences merge
 order: a P0 child that becomes ready second merges second. At queue width 1 this
 costs one merge cycle, which does not justify reintroducing head-of-line
