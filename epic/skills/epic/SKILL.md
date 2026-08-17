@@ -259,10 +259,10 @@ config leaves it blank).
    local CodeRabbit CLI pass is RETIRED here. The post-PR **Claude Review action** is a
    config-conditional gate: it applies only when `claude-review` is listed in the
    repo's `merge.required_checks` (then it fires automatically on PR open, step 7, and
-   is driven in the merge phase, step 3); when that check is absent, no Claude Review
-   gate runs — skip it cleanly and note the skip, the same shape as the Copilot N/A
-   path. CodeRabbit's bot review and Copilot are likewise gated in the merge phase, not
-   run locally pre-PR.
+   is resolved in the merge phase, step 1, as just another required check); when that
+   check is absent, no Claude Review gate runs — skip it cleanly and note the skip, the
+   same shape as the Copilot N/A path. CodeRabbit's bot review and Copilot are likewise
+   gated in the merge phase, not run locally pre-PR.
 7. **PR**: rebase on `origin/main`; `gh pr create` → base `main`, body `Closes #<n>`
    (same-repo — children's PRs always close issues in their own repo), summary, test
    plan including every `pr-test-plan` gate's record. Comment the PR URL on the
@@ -270,8 +270,9 @@ config leaves it blank).
    the PR automatically triggers the **Claude Review action**
    (`.github/workflows/claude-review.yml` — the `claude-review` required check): it
    reviews the head, posts inline comments, and submits a formal APPROVE /
-   REQUEST_CHANGES review, driven in the merge phase, step 3. When `claude-review` is
-   not a required check, no such gate runs — skip it cleanly and note the skip. When
+   REQUEST_CHANGES review, resolved in the merge phase, step 1, as just another
+   required check. When `claude-review` is not a required check, no such gate
+   runs — skip it cleanly and note the skip. When
    `copilot_review` is enabled, request a Copilot review via the
    `requested_reviewers` call in the reference's "Review threads + Copilot review"
    section; a 422 means Copilot review is not available on this repo → treat Copilot
@@ -303,61 +304,73 @@ waiting at the head of the merge queue is NOT charged to the child.
 ### 3. Merge phase (default) — or stop
 
 **If `--stop-at-pr`:** report (child, worktree, branch, PR URL, gates, reviews —
-including a **Claude review status** field = one of "pending" / "approved (green)" /
-"changes requested (red)" / "N/A (not required)" (the last when `claude-review` is not
-in the repo's `merge.required_checks` — parallel to the Copilot "N/A (not enabled)"
-state) derived from the `claude-review` check conclusion + the formal review state (see
-the reference's "Claude Review action" section), CodeRabbit status, and a **Copilot
-status** field = one of "not requested" / "requested, pending" / "clean" /
-"N/A (not enabled)" with any unresolved comment count, derived from the Copilot
-review-state query in the reference) and STOP.
-Worktree stays intact. Status stays In Review. No `--auto` was armed (it is armed only
-in the merge phase), so nothing to disarm.
+including a **Claude review status** field = one of "pending" / "approved (green)"
+/ "changes requested (red)" / "N/A (not required)" (the Claude Review gate applies
+only when `claude-review` is listed in the repo's `merge.required_checks`; when
+absent, skip it and note the skip. This mirrors the Copilot "N/A (not enabled)"
+state), CodeRabbit status, and a **Copilot status** field = one of "not requested"
+/ "requested, pending" / "clean" / "N/A (not enabled)") and STOP. Worktree stays
+intact. Status stays In Review. No `--auto` was armed (it is armed only in the
+merge phase), so nothing to disarm.
 
-**Otherwise drive to merge.** Arm `--auto` LAST — only after every PROSE gate is
-satisfied. Do NOT arm it at the start (an armed PR would merge the instant CI goes
-green with findings still open).
+**Otherwise drive to merge, through the queue.** A child enters the merge phase
+only at the head of the FIFO merge queue (`schedule.py`), and only one PR is ever
+in the merge phase — width-1 is what lets each PR rebase exactly once, onto the
+`main` its predecessor just produced.
 
-1. **Prose-gate resolution (BEFORE arming `--auto`):** drive these to clean first —
-   - **Claude Review action (config-conditional gate)** → The Claude Review gate
-     applies only when `claude-review` is listed in the repo's `merge.required_checks`;
-     when absent, skip it and note the skip. When it IS required, the `claude-review`
-     check carries Claude's verdict on the LATEST head: red = REQUEST_CHANGES (or no
-     verdict — the check is fail-closed), green = APPROVE. On REQUEST_CHANGES, read
-     the inline review comments + the formal review body, address them via the
-     implementer, push, then wait for the re-review of the new head (every push
-     re-triggers it). Budget `CLAUDE_REVIEW_FIX_ROUNDS`. While the gate applies, NEVER
-     arm `--auto` while `claude-review` is red; when it is skipped this constraint is
-     vacuous.
-   - CodeRabbit `CHANGES_REQUESTED` (where review/approval is required) → address via
-     implementer, push; each push dismisses stale approvals — always wait for review
-     of the LATEST head. Budget `CODERABBIT_FIX_ROUNDS`.
-   - GitHub Copilot review (ONLY if the PR-time request succeeded — skip cleanly if
-     N/A): every Copilot comment MUST be resolved before merge: address via
-     implementer, push, then resolve the thread via `resolveReviewThread` (re-request
-     review of the LATEST head per the reference's "Review threads + Copilot review"
-     section). Budget `COPILOT_FIX_ROUNDS`.
-   - `required_review_thread_resolution: true` repos: resolve every thread.
-   - all `custom_gates` whose hook gates merge.
-2. **Arm `gh pr merge <pr> --auto --<merge.method>`** — now that every prose gate is
-   confirmed satisfied — then run the CI fix-loop (CI fix-rounds MAY happen after
-   arming; prose-gate resolution must NOT):
-   - required check failing → diagnose from the run, dispatch the implementer if
+1. **Ask GitHub what is unmet** — `python epic/scripts/mergeability.py --repo
+   <owner/name> --pr <n>` returns the COMPLETE requirement set from the live
+   ruleset plus current PR state. This is the authority; the repo's `epic.yaml`
+   `merge` block is a declaration of intent that the script cross-checks and
+   reports drift against. Resolve by code:
+   - `behind-base` → update the branch onto freshly fetched `origin/main`.
+   - `conflict` → rebase and resolve. Budget `CONFLICT_ATTEMPTS`, which also
+     bounds RECURRING `behind-base`: exceeding it means the base is moving faster
+     than a CI cycle completes → park with exactly that diagnosis.
+   - `check-failing:<name>` → diagnose from the run, dispatch the implementer if
      your harness supports subagents (otherwise make the fix inline), push.
-     Budget `CI_FIX_ROUNDS`.
-   - behind strict `main` / conflict → rebase + resolve. Budget `CONFLICT_ATTEMPTS`.
-     Conflicts are never terminal until the budget is exhausted.
-   - a stuck CI check that never posts a verdict → poll up to `MAX_WAIT_CYCLES`.
-3. On MERGED (verify `state == MERGED`): confirm the child issue auto-closed (close it
-   if not), Status = **Done**, sweep the worktree (remove + prune + delete branch). If this was the LAST child (epic now complete: every sub-issue `state == CLOSED`,
-   none parked-open), apply the epic-completion rule: close the epic issue if still
-   open and set the epic's own Project Status = **Done**.
-4. Report and STOP (interactive modes drive ONE child only).
+   - `check-pending:<name>` → wait via `pr_watch.py`, never a fixed sleep.
+   - `check-missing:<name>` → a required check never started; diagnose, do not
+     wait forever.
+   - `thread-unresolved:<id>` → drive to a terminal state: addressed (fix, push,
+     then CALL `resolveReviewThread` — changing the code is not resolving the
+     thread), rebutted (reply with rationale, then resolve — disagreeing with a
+     reviewer is allowed, ignoring one is not), or outdated (`isOutdated` because
+     the code moved; resolve with a reply naming the change).
+   - `changes-requested` → address via implementer, push; each push dismisses
+     stale approvals, so always wait for review of the LATEST head.
+   - `approval-missing` → the driver must NEVER approve its own PR. Park
+     waiting-on-human with the PR intact and unarmed; this park kind is reported
+     distinctly and never counts toward the systemic-cause signature threshold.
+   - `draft` → mark ready.
+   - every `custom_gate` whose hook gates merge.
 
-Budgets exhausted (interactive) → STOP with a precise diagnostic; leave PR + worktree.
-**HARD: before any such STOP, if `--auto` was armed, run
-`gh pr merge <pr> --disable-auto` and note the disarm in the report** — never leave a
-STOPPED PR armed to auto-merge unresolved findings.
+   A **re-armed review**: if the head-of-queue rebase resolved conflicts, the diff
+   is no longer the one the pre-PR reviewers approved — re-run the pre-PR review
+   loop on the rebased head before arming. A clean fast-forward does not re-arm it.
+
+2. **Arm `gh pr merge <pr> --auto --<merge.method>`** — only once
+   `mergeability.py` returns an EMPTY requirement set and the rebased head's
+   checks are green. Arming earlier risks merging the instant CI goes green with
+   a finding still open.
+
+3. **HARD exit condition**: the merge phase does not exit successfully until
+   `mergeability.py` returns empty (equivalently `mergeStateStatus == CLEAN`) or
+   the PR is MERGED. There is no partial satisfaction — every requirement the
+   repo imposes must be resolved.
+
+4. On MERGED (verify `state == MERGED`): confirm the child issue auto-closed
+   (close it if not), Status = **Done**, sweep the worktree (remove + prune +
+   delete branch). If this was the LAST child (epic now complete: every
+   sub-issue `state == CLOSED`, none parked-open), apply the epic-completion
+   rule: close the epic issue if still open and set the epic's own Project
+   Status = **Done**.
+
+5. Report; interactive modes then STOP (they drive ONE child only).
+
+**HARD: before any STOP or park, if `--auto` was armed, run
+`gh pr merge <pr> --disable-auto` and note the disarm in the report** — never
+leave a STOPPED PR armed to auto-merge unresolved findings.
 
 ## Mode: `run` (autonomous — epic to completion)
 
@@ -373,14 +386,11 @@ default exists. HARD EXCEPTION: for a contract/API-defining child or a P0 child,
 auto-decide an architectural fork — park for human input instead; a wrong default there
 is consumed downstream before any human sees it). Stateless — recover ALL
 state each wake from `gh` (epic-config, sub-issues, blockedBy, Project fields,
-PR map, `git worktree list`). **Never STOP or park with auto-merge armed unless every
-prose gate is confirmed satisfied** — on any park/STOP that leaves a PR behind while
-`--auto` is armed, run `gh pr merge <pr> --disable-auto` first and record it in the
-FAILED/park comment. Tunables (do not exceed): `CI_ESTIMATE=420s`,
-`CI_FIX_ROUNDS=3`,
-`CLAUDE_REVIEW_FIX_ROUNDS=3`, `CODERABBIT_FIX_ROUNDS=3`,
-`COPILOT_FIX_ROUNDS=3`,
-`CONFLICT_ATTEMPTS=2`, `MERGE_WAIT_CYCLES=4`, `MAX_WAIT_CYCLES=12`,
+PR map, `git worktree list`). **Never STOP or park with auto-merge armed unless
+`mergeability.py`'s requirement set is empty** — on any park/STOP that leaves a PR
+behind while `--auto` is armed, run `gh pr merge <pr> --disable-auto` first and
+record it in the FAILED/park comment. Tunables (do not exceed): `CI_ESTIMATE=420s`,
+`CONFLICT_ATTEMPTS=2`, `MAX_WAIT_CYCLES=12`,
 `GLOBAL_PARK_THRESHOLD=3`, `CONSECUTIVE_PARK_HALT=2`. The review loops (step-1 pin,
 pre-PR reviews) are not in this list — they run to convergence per the
 convergence contract above, bounded only by `REPIN_ATTEMPTS`,
@@ -410,10 +420,10 @@ that never posted) rather than rescheduling forever.
   on the child (the durable parked-marker; note the disarm), set Status = **Parked**,
   leave worktree + PR intact, continue with the next unblocked child. Children blocked
   by a parked child are skipped.
-- Merge-deadlock (green but unmerged after `MERGE_WAIT_CYCLES`) → disarm `--auto`
-  (`gh pr merge <pr> --disable-auto`), then park with a diagnostic naming the actual
-  unmet gate (approval source? strict up-to-date? thread resolution?) per the repo's
-  epic.yaml `merge` block.
+- Merge-deadlock (armed but unmerged after `MAX_WAIT_CYCLES` wait cycles at the head
+  of the merge queue) → disarm `--auto` (`gh pr merge <pr> --disable-auto`), re-run
+  `mergeability.py` to name the actual unmet requirement, then park with that
+  diagnosis.
 - **Global halt** (no reschedule, full report): `CONSECUTIVE_PARK_HALT` consecutive
   parks, OR total parked ≥ `GLOBAL_PARK_THRESHOLD`, OR a parked child that every
   remaining child transitively depends on (compute from the `blockedBy` graph).
