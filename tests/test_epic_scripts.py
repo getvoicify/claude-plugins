@@ -11,6 +11,7 @@ from config import (
     resolve_project,
     validate_prefix,
 )
+from preflight import check
 
 
 def test_run_json_parses_stdout(monkeypatch):
@@ -106,3 +107,36 @@ def test_resolve_gates_skips_names_absent_from_this_catalog():
     applicable, skipped = resolve_gates(["screenshot", "migration"], catalog)
     assert [g["name"] for g in applicable] == ["screenshot"]
     assert skipped == ["migration"]
+
+
+def test_check_passes_when_clean():
+    assert check("dark-mode", 12, [], 3, False) == []
+
+
+def test_check_flags_existing_worktree_for_same_child():
+    assert check("dark-mode", 12, ["dark-mode-12"], 3, False) == ["worktree-exists"]
+
+
+def test_check_flags_concurrency_cap():
+    trees = ["dark-mode-1", "dark-mode-2", "dark-mode-3"]
+    assert check("dark-mode", 12, trees, 3, False) == ["concurrency-cap"]
+
+
+def test_check_allows_siblings_below_cap():
+    assert check("dark-mode", 12, ["dark-mode-1", "dark-mode-2"], 3, False) == []
+
+
+def test_check_flags_nesting():
+    assert check("dark-mode", 12, [], 3, True) == ["nested-worktree"]
+
+
+def test_check_flags_invalid_prefix():
+    assert check("Dark_Mode", 12, [], 3, False) == ["prefix-invalid"]
+
+
+def test_check_returns_all_violations_sorted():
+    assert check("dark-mode", 1, ["dark-mode-1"], 1, True) == [
+        "concurrency-cap",
+        "nested-worktree",
+        "worktree-exists",
+    ]
