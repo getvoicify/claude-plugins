@@ -1,6 +1,6 @@
 ---
 name: epic
-description: Drive a GitHub epic (sub-issues + a project board) one child at a time
+description: Drive a GitHub epic (sub-issues + a project board) — one child per interactive invocation, N in parallel under `run`
 ---
 
 The text after the skill name is the epic/child reference.
@@ -24,7 +24,7 @@ invocation loops the same per-child mechanics autonomously until the epic is don
 ## Arguments
 
 ```
-/epic <epic#> [status | next | run | <child#>] [--stop-at-pr] [--sweep]
+/epic <epic#> [status | next | run | <child#>] [--stop-at-pr] [--sweep] [--serial]
 ```
 
 - `<epic#>` required. With no argument: list open epics and STOP — scope `--owner` to
@@ -42,6 +42,11 @@ invocation loops the same per-child mechanics autonomously until the epic is don
 - `--sweep`: valid on `status` only. Opts into the destructive reconcile (worktree
   removal, branch deletion, Project-field mutation). Without it `status` is pure
   read-only and only REPORTS the drift + what `--sweep` would change.
+- `--serial`: valid on `run` only. Drives one child at a time, as the pre-parallel
+  driver did. On `status`/`next`/`<child#>` → STOP: "`--serial` applies to `run`
+  only." If your harness supports subagents, `run` dispatches children in parallel
+  by default; otherwise it drives serially automatically, making `--serial` a
+  no-op there.
 
 ## Two-layer config — load fresh EVERY invocation (stateless recovery)
 
@@ -58,26 +63,14 @@ invocation loops the same per-child mechanics autonomously until the epic is don
    "`run` aborted: cannot locate epic #<n> — no cwd match and no `planning.repo` in the
    cwd checkout's epic.yaml." Legacy epics homed in working repos are covered by the
    cwd-first order.
-2. Parse the fenced `epic-config` YAML block STRICTLY (python + pyyaml via the sandbox
-   runner; `pip install --break-system-packages --quiet pyyaml` only on ImportError;
-   never regex-only extraction). Keys:
-   - `epic` (int) — must equal `<epic#>` (mismatch → STOP).
-   - `repo` (`owner/name`) — where THIS epic issue lives.
-   - `project` (int, optional) — ProjectV2 number for status tracking. When omitted,
-     resolve it from Layer-2 `planning.project`; if that too is absent → STOP (no
-     hardcoded default — back-compat is a one-line `planning.project` backfill in the
-     cwd checkout's epic.yaml). Whatever number resolves, the driver re-resolves
-     projectId + field & option ids at runtime (see github-graphql.md).
-   - `docs_repo` (`owner/name`) — working repo where `spec`/`runbook` paths resolve.
-   - `worktree_prefix` — must match `^[a-z0-9]+(-[a-z0-9]+)*$` (else STOP: "invalid
-     worktree_prefix (must be kebab-case)"); guards every shell interpolation.
-   - `spec`, `runbook` — paths relative to `docs_repo` root.
-   - `custom_gates` (list, optional, default `[]`) — epic-level UNION of all children's
-     gate names across repos; resolved PER-CHILD-REPO against that child's
-     `.agents/epic.yaml` (or `.claude/epic.yaml` fallback) gate catalog (Layer 2). A
-     name absent from the CURRENT child's repo catalog but present in another involved
-     repo's is SKIPPED for this child (not fatal); a name unknown in EVERY involved
-     repo's catalog → see "Missing or malformed config".
+2. Parse and resolve BOTH layers with `python epic/scripts/config.py --epic <epic#>
+   --repo <owner/name>`. It emits one resolved-config JSON object and is the only
+   supported parser — never regex-extract the block by hand. It enforces the
+   `epic` / `<epic#>` match, the kebab-case `worktree_prefix`, the D4 project
+   order (`epic-config.project` → `planning.project` → STOP), and per-child-repo
+   gate resolution. A `ConfigError` on stdout is a STOP in every mode.
+   `epic-config` also accepts optional `max_parallel` (int, default 3) — the
+   global cap on children in flight across all involved repos.
 3. NO `children_source` key and NO `## Dependency model` section are expected:
    children come from the sub-issue API; blockers from native `blockedBy` relations.
    If the body still has a task-list (`- [ ] #NNN`) → STOP: "legacy epic — run
@@ -128,17 +121,17 @@ the operator to clone it; never drive via API-only edits.
 
 ## Worktree constraints (HARD — every drive, enforced in the child's repo checkout)
 
-1. **Deterministic**: one worktree per child at `<worktrees.root>/${worktree_prefix}-<n>`
-   on branch `${worktree_prefix}-<n>`, from latest `origin/main`. Never reuse for a
-   different issue, never elsewhere (especially not `.claude/worktrees/`), never rename.
-2. **No nesting / clean origin**: never start from `main`, inside another worktree, or
-   detached HEAD. If currently inside one → STOP, do not nest.
-3. **Per-issue uniqueness**: existing worktree/branch `${worktree_prefix}-<n>` → STOP
-   (already being driven).
-4. **Concurrency cap**: count `${worktree_prefix}-*` worktrees (`git worktree list`);
-   ≥ `worktrees.max_concurrent` (default 3) → STOP.
-5. **Auto-clean on merge ONLY**: never remove mid-flight/on-failure/at STOP; remove
-   only after the child's PR is MERGED.
+Run `python epic/scripts/preflight.py --prefix <worktree_prefix> --child <n>
+--max-concurrent <worktrees.max_concurrent>` before any drive. An empty violation
+list is the only pass. Any of `prefix-invalid`, `worktree-exists`,
+`concurrency-cap`, `nested-worktree` → STOP, naming the code.
+
+The constraints it enforces: one deterministic worktree per child at
+`<worktrees.root>/${worktree_prefix}-<n>` on branch `${worktree_prefix}-<n>` from
+latest `origin/main`, never reused for a different issue and never elsewhere;
+never nested inside another worktree or started from `main`/detached HEAD;
+per-issue uniqueness; and the per-repo concurrency cap. Auto-clean on merge ONLY
+— never remove mid-flight, on failure, or at STOP.
 
 ## Epic-completion lifecycle (all modes)
 
