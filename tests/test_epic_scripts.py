@@ -140,3 +140,16 @@ def test_check_returns_all_violations_sorted():
         "nested-worktree",
         "worktree-exists",
     ]
+
+
+def test_check_ignores_worktrees_with_shared_prefix_segments():
+    # Regression: dark-mode-v2-3 should not count toward dark-mode's cap
+    # even though "dark-mode-v2-3".startswith("dark-mode-") is True
+    trees = ["dark-mode-v2-3", "dark-mode-v2-4"]
+    assert check("dark-mode", 12, trees, 1, False) == []
+
+
+def test_check_ignores_unrelated_worktrees():
+    # Non-owned worktrees do not count toward concurrency cap
+    trees = ["other-epic-1"]
+    assert check("dark-mode", 12, trees, 1, False) == []
