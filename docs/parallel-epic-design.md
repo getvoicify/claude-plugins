@@ -416,9 +416,34 @@ what it should always have been: a declaration of intent that
 
 **The HARD exit condition.** The merge phase does not exit successfully until
 `mergeability.py` returns an empty requirement set — equivalently, until GitHub
-reports `mergeStateStatus == CLEAN` — or the PR is `MERGED`. There is no partial
-satisfaction and no "the gates I knew about are green, so proceed". Every
-requirement the repo imposes must be resolved.
+reports a mergeable `mergeStateStatus` — or the PR is `MERGED`. There is no
+partial satisfaction and no "the gates I knew about are green, so proceed".
+Every requirement the repo imposes must be resolved.
+
+**The set must never be silently empty.** A requirement table derived from parts
+can fail to explain a block, and an empty set is read as "mergeable" — which
+would reintroduce, inside this very module, the incomplete-enumeration failure it
+exists to eliminate. So the derivation fails closed on three axes:
+
+- **Unexplained blocks.** `CLEAN`, `UNSTABLE` and `HAS_HOOKS` are GitHub's
+  mergeable states; every other value — `BLOCKED`, `DIRTY`, `BEHIND`, `DRAFT`,
+  `UNKNOWN`, and anything GitHub adds later — blocks. If a blocking state yields
+  no derived requirement, the set carries `blocked-unexplained:<state>` rather
+  than reporting clean.
+- **Authoritative fields beat the ruleset.** `reviewDecision == REVIEW_REQUIRED`
+  emits `approval-missing` on its own, never conditioned on the ruleset carrying
+  `required_approving_review_count` — a partial ruleset fetch, or a repo still on
+  classic branch protection, must not be able to make a blocked PR read clean.
+- **Both rollup shapes.** `statusCheckRollup` mixes modern CheckRun entries
+  (`name`/`status`/`conclusion`) with legacy StatusContext entries
+  (`context`/`state`). Both are normalized; treating only the former leaves a
+  commit-status repo with a permanent unnameable pending check.
+
+The converse guard matters too: only checks the ruleset declares required may
+gate. `UNSTABLE` means GitHub considers the PR mergeable and a *non-required*
+check failed, so gating on every rollup entry would fix-loop on a check nobody
+requires. When the ruleset declares no required checks, all checks gate — fail
+closed on ignorance, with `blocked-unexplained` as the backstop.
 
 **Stale branches.** `behind-base` is a clean fast-forward and is simply applied;
 `conflict` goes through the existing rebase-and-resolve path. The interaction
