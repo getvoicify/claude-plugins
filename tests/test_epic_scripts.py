@@ -634,3 +634,54 @@ def test_is_stall_requires_two_consecutive_no_progress():
     assert is_stall(["no_progress"], 2) is False
     assert is_stall(["no_progress", "no_progress"], 2) is True
     assert is_stall(["no_progress", "progress", "no_progress"], 2) is False
+
+
+# Task 9: pin verification
+
+from verify_pin import classify, parse_claims
+
+PIN = """
+## Pin
+
+- verified: src/auth/Auth.kt@origin/main#refresh — returns Result<Token>
+- assumption: billing API accepts partial refunds
+- some unrelated prose line
+"""
+
+
+def test_parse_claims_extracts_both_kinds():
+    claims = parse_claims(PIN)
+    assert [c["kind"] for c in claims] == ["verified", "assumption"]
+
+
+def test_parse_claims_splits_path_ref_symbol():
+    claim = parse_claims(PIN)[0]
+    assert claim["path"] == "src/auth/Auth.kt"
+    assert claim["ref"] == "origin/main"
+    assert claim["symbol"] == "refresh"
+
+
+def test_parse_claims_assumption_has_no_locator():
+    claim = parse_claims(PIN)[1]
+    assert claim["path"] is None
+    assert "partial refunds" in claim["text"]
+
+
+def test_classify_verified_when_symbol_present():
+    claim = parse_claims(PIN)[0]
+    assert classify(claim, "fun refresh(): Result<Token> {}") == "verified"
+
+
+def test_classify_stale_when_symbol_absent():
+    claim = parse_claims(PIN)[0]
+    assert classify(claim, "fun renew(): Result<Token> {}") == "stale"
+
+
+def test_classify_unverifiable_when_source_missing():
+    claim = parse_claims(PIN)[0]
+    assert classify(claim, None) == "unverifiable"
+
+
+def test_classify_assumption_passes_through():
+    claim = parse_claims(PIN)[1]
+    assert classify(claim, None) == "assumption"
