@@ -322,7 +322,9 @@ in the merge phase — width-1 is what lets each PR rebase exactly once, onto th
    <owner/name> --pr <n>` returns the COMPLETE requirement set from the live
    ruleset plus current PR state. This is the authority; the repo's `epic.yaml`
    `merge` block is a declaration of intent that the script cross-checks and
-   reports drift against. Resolve by code:
+   reports drift against. Resolve by code (where a bullet below says "park", that
+   means: `run` follows the circuit-breakers below; interactive modes STOP and
+   hand off with the same diagnostic):
    - `behind-base` → update the branch onto freshly fetched `origin/main`.
    - `conflict` → rebase and resolve. Budget `CONFLICT_ATTEMPTS`, which also
      bounds RECURRING `behind-base`: exceeding it means the base is moving faster
@@ -330,8 +332,10 @@ in the merge phase — width-1 is what lets each PR rebase exactly once, onto th
    - `check-failing:<name>` → diagnose from the run, dispatch the implementer if
      your harness supports subagents (otherwise make the fix inline), push.
    - `check-pending:<name>` → wait via `pr_watch.py`, never a fixed sleep.
-   - `check-missing:<name>` → a required check never started; diagnose, do not
-     wait forever.
+   - `check-missing:<name>` → a required check never started; diagnose why
+     (workflow trigger misconfigured? branch protection stale?) rather than
+     waiting forever — if it still hasn't started, park with a diagnostic naming
+     the missing check.
    - `thread-unresolved:<id>` → drive to a terminal state: addressed (fix, push,
      then CALL `resolveReviewThread` — changing the code is not resolving the
      thread), rebutted (reply with rationale, then resolve — disagreeing with a
@@ -342,6 +346,16 @@ in the merge phase — width-1 is what lets each PR rebase exactly once, onto th
    - `approval-missing` → the driver must NEVER approve its own PR. Park
      waiting-on-human with the PR intact and unarmed; this park kind is reported
      distinctly and never counts toward the systemic-cause signature threshold.
+   - `blocked-unexplained:<state>` → the module's fail-closed backstop: a
+     blocking `mergeStateStatus` (`BLOCKED`, `UNKNOWN`, or any value added later)
+     that checks, threads, and review decision could not explain. Treat it as a
+     genuine blocker, never as noise — GitHub is refusing the merge for a reason
+     the driver could not derive. Re-run `mergeability.py` once after a short
+     wait, since some states (notably `UNKNOWN`) are transient while GitHub
+     computes mergeability. If it persists: disarm `--auto` if it was armed, then
+     park with the raw `mergeStateStatus` value named in the diagnostic —
+     interactive STOPs and hands off with the same diagnostic — since that string
+     is what a human needs to diagnose it.
    - `draft` → mark ready.
    - every `custom_gate` whose hook gates merge.
 
