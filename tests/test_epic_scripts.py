@@ -575,3 +575,62 @@ def test_all_checks_gate_when_required_checks_empty():
     reqs = requirements(pr, ruleset, [])
     # When no required checks are declared, all checks gate (fail-closed)
     assert codes(reqs) == ["check-failing:any-check"]
+
+
+# Task 8: convergence and stall detection
+
+from converge import blocking_set, compare, fingerprint, is_stall
+
+
+def finding(claim, blocking=True, file="a.py", category="bug", anchor="f()"):
+    return {"file": file, "anchor": anchor, "category": category,
+            "claim": claim, "blocking": blocking}
+
+
+def test_fingerprint_ignores_anchor_movement():
+    assert fingerprint(finding("x", anchor="f()")) == fingerprint(
+        finding("x", anchor="g():42")
+    )
+
+
+def test_fingerprint_normalizes_whitespace_and_case():
+    assert fingerprint(finding("Missing  Retry")) == fingerprint(
+        finding("missing retry")
+    )
+
+
+def test_fingerprint_distinguishes_file_and_category():
+    assert fingerprint(finding("x", file="a.py")) != fingerprint(
+        finding("x", file="b.py")
+    )
+    assert fingerprint(finding("x", category="bug")) != fingerprint(
+        finding("x", category="spec-gap")
+    )
+
+
+def test_blocking_set_excludes_residual_findings():
+    findings = [finding("real"), finding("nit", blocking=False)]
+    assert len(blocking_set(findings)) == 1
+
+
+def test_compare_converged_when_no_blocking_remain():
+    assert compare([finding("x")], [finding("nit", blocking=False)]) == "converged"
+
+
+def test_compare_progress_when_findings_resolved():
+    prev = [finding("x"), finding("y")]
+    assert compare(prev, [finding("x")]) == "progress"
+
+
+def test_compare_progress_when_new_evidence_appears():
+    assert compare([finding("x")], [finding("x"), finding("z")]) == "progress"
+
+
+def test_compare_no_progress_on_identical_blocking_set():
+    assert compare([finding("x")], [finding("x")]) == "no_progress"
+
+
+def test_is_stall_requires_two_consecutive_no_progress():
+    assert is_stall(["no_progress"], 2) is False
+    assert is_stall(["no_progress", "no_progress"], 2) is True
+    assert is_stall(["no_progress", "progress", "no_progress"], 2) is False
