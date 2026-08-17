@@ -394,8 +394,10 @@ An orchestrator loop. Each cycle:
 2. `python epic/scripts/schedule.py --epic <n>` → the runnable wave, the FIFO
    merge queue, and any halt reason.
 3. Dispatch one **drive subagent per wave member, in parallel**, if your harness
-   supports subagents; otherwise drive the wave sequentially in merge-queue order,
-   in-session. `--serial` forces the sequential path.
+   supports subagents; otherwise drive the wave sequentially, in-session, in the
+   wave order `schedule.py` returned (a child without a PR yet isn't in the merge
+   queue, so the merge queue can't order this step). `--serial` forces the
+   sequential path.
 4. Marshal the merge queue: admit `merge_queue[0]` ONLY, run the merge phase for
    it — its requirement-resolution step (§3 "Ask GitHub what is unmet") re-derives
    what's unmet straight from `gh` and `mergeability.py` every time it runs, so a
@@ -418,9 +420,9 @@ letting each PR rebase exactly once onto the `main` its predecessor just
 produced. Parallelism buys the wave everything before that line.
 
 **A drive subagent owns exactly one child** — dispatched per wave member if your
-harness supports subagents, otherwise executed inline, sequentially, in
-merge-queue order (`--serial` forces this path even when subagents are
-available): worktree → context → pin → implement → `pre-review` gates → pre-PR
+harness supports subagents, otherwise executed inline, sequentially, in the wave
+order `schedule.py` returned (`--serial` forces this path even when subagents
+are available): worktree → context → pin → implement → `pre-review` gates → pre-PR
 reviews → PR-open → Status = In Review → prose-gate resolution, ending when every
 prose gate is clean. It NEVER rebases for merge, NEVER arms `--auto`, NEVER
 merges, and never touches another child's worktree or branch. Prose-gate
@@ -442,8 +444,11 @@ default exists. HARD EXCEPTION: for a contract/API-defining child or a P0 child,
 auto-decide an architectural fork — park for human input instead; a wrong default there
 is consumed downstream before any human sees it). Stateless — recover ALL
 state each wake from `gh` (epic-config, sub-issues, blockedBy, Project fields,
-PR map, `git worktree list`). **Never STOP or park with `--auto` armed** — run
-`gh pr merge <pr> --disable-auto` first and record it.
+PR map, `git worktree list`). On any resume, confirm each in-flight branch is
+fast-forwardable with a clean working tree before touching it; on divergence,
+rebase/reconcile within `CONFLICT_ATTEMPTS` — NEVER force-overwrite. **Never
+STOP or park with `--auto` armed** — run `gh pr merge <pr> --disable-auto`
+first and record it.
 
 Tunables (do not exceed): `MAX_PARALLEL=3`, `STALL_ROUNDS=2`, `REPIN_ATTEMPTS=1`,
 `PR_WATCH_DEADLINE_S=3600`, `CHILD_DRIVE_CEILING_S=7200`, `CONFLICT_ATTEMPTS=2`,
@@ -463,6 +468,17 @@ check/reviewer that never posted, rather than rescheduling forever.
   trailer `epic-park: {"code":…, "gate":…, "signature":…, "waiting_on_human":…}`;
   set Status = **Parked**; leave worktree + PR intact. **Siblings continue** — a
   park never stalls the wave, and the merge queue keeps draining around it.
+- **Armed-but-refusing**: the head-of-queue PR has `--auto` armed and
+  `mergeability.py` reports an EMPTY requirement set, yet the PR still has not
+  merged within `PR_WATCH_DEADLINE_S` — GitHub is refusing a merge that
+  nothing in the visible requirement set explains (an org-level ruleset, a
+  GitHub-side merge queue, a required deployment). Disarm
+  (`gh pr merge <pr> --disable-auto`), then park with a diagnostic recording
+  that GitHub reports nothing outstanding yet refuses to merge, naming the
+  current `mergeStateStatus`, with the same `epic-park:` trailer as above;
+  interactive modes STOP and hand off with the same diagnostic. This unblocks
+  the queue: the next child is admitted to the merge phase on the following
+  cycle.
 - `approval-missing` parks are `waiting_on_human: true` and are excluded from the
   systemic-cause count: an epic correctly waiting on your approval is working.
 - **Global halt** (no reschedule, full report) exactly when `schedule.py` returns
