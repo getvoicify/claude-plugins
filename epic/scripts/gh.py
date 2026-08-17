@@ -13,7 +13,7 @@ class GhError(RuntimeError):
 def run_json(args, cwd=None):
     """Run `gh <args>` and parse stdout as JSON."""
     try:
-        out = subprocess.check_output(["gh", *args], text=True, cwd=cwd)
+        out = subprocess.check_output(["gh", *args], text=True, stderr=subprocess.PIPE, cwd=cwd)
     except subprocess.CalledProcessError as exc:
         raise GhError(exc.returncode, exc.stderr) from exc
     return json.loads(out)
