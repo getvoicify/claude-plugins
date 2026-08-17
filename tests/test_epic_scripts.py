@@ -724,3 +724,81 @@ def test_parse_claims_empty_string():
 def test_parse_claims_none():
     """parse_claims(None) returns empty list without raising."""
     assert parse_claims(None) == []
+
+
+# Task 10: pr_watch — responsive PR monitoring
+
+from pr_watch import backoff, diff_event, snapshot
+
+
+def test_snapshot_records_head_and_check_states():
+    pr = {
+        "headRefOid": "a1b2c3",
+        "statusCheckRollup": [
+            {"name": "unit", "status": "COMPLETED", "conclusion": "SUCCESS"}
+        ],
+        "reviews": [],
+    }
+    snap = snapshot(pr, [])
+    assert snap["head"] == "a1b2c3"
+    assert snap["checks"] == "SUCCESS"
+
+
+def test_snapshot_checks_pending_when_any_incomplete():
+    pr = {
+        "headRefOid": "a1b2c3",
+        "statusCheckRollup": [
+            {"name": "unit", "status": "COMPLETED", "conclusion": "SUCCESS"},
+            {"name": "lint", "status": "IN_PROGRESS", "conclusion": None},
+        ],
+        "reviews": [],
+    }
+    assert snapshot(pr, [])["checks"] == "PENDING"
+
+
+def test_snapshot_records_latest_review_state_per_author():
+    pr = {
+        "headRefOid": "a1b2c3",
+        "statusCheckRollup": [],
+        "reviews": [
+            {"author": "coderabbitai", "state": "COMMENTED",
+             "submittedAt": "2026-08-17T09:00:00Z"},
+            {"author": "coderabbitai", "state": "APPROVED",
+             "submittedAt": "2026-08-17T10:00:00Z"},
+        ],
+    }
+    assert snapshot(pr, [])["coderabbitai"] == "APPROVED"
+
+
+def test_snapshot_counts_unresolved_threads():
+    pr = {"headRefOid": "a1b2c3", "statusCheckRollup": [], "reviews": []}
+    threads = [{"id": "T_1", "isResolved": False}, {"id": "T_2", "isResolved": True}]
+    assert snapshot(pr, threads)["threads_unresolved"] == 1
+
+
+def test_diff_event_returns_none_when_nothing_awaited_changed():
+    prev = {"head": "a1", "checks": "PENDING", "coderabbitai": "COMMENTED"}
+    curr = {"head": "a1", "checks": "PENDING", "coderabbitai": "APPROVED"}
+    assert diff_event(prev, curr, ["checks"]) is None
+
+
+def test_diff_event_reports_first_awaited_change():
+    prev = {"head": "a1", "checks": "PENDING"}
+    curr = {"head": "a1", "checks": "SUCCESS"}
+    event = diff_event(prev, curr, ["checks"])
+    assert event["event"] == "checks"
+    assert event["state"] == "SUCCESS"
+    assert event["head"] == "a1"
+
+
+def test_diff_event_reports_head_change_even_when_not_awaited():
+    prev = {"head": "a1", "checks": "PENDING"}
+    curr = {"head": "b2", "checks": "PENDING"}
+    assert diff_event(prev, curr, ["checks"])["event"] == "head-changed"
+
+
+def test_backoff_starts_fast_and_widens_to_a_ceiling():
+    assert backoff(0) == 15
+    assert backoff(120) == 30
+    assert backoff(600) == 60
+    assert backoff(86400) == 60
