@@ -388,8 +388,50 @@ leave a STOPPED PR armed to auto-merge unresolved findings.
 
 ## Mode: `run` (autonomous — epic to completion)
 
-Same per-child mechanics in a self-scheduling loop. One child in flight at a time
-(strict up-to-date checks make concurrent PRs invalidate each other).
+An orchestrator loop. Each cycle:
+
+1. Recover ALL state from `gh` — stateless recovery is unchanged and HARD.
+2. `python epic/scripts/schedule.py --epic <n>` → the runnable wave, the FIFO
+   merge queue, and any halt reason.
+3. Dispatch one **drive subagent per wave member, in parallel**, if your harness
+   supports subagents; otherwise drive the wave sequentially in merge-queue order,
+   in-session. `--serial` forces the sequential path.
+4. Marshal the merge queue: admit `merge_queue[0]` ONLY, run the merge phase for
+   it — its requirement-resolution step (§3 "Ask GitHub what is unmet") re-derives
+   what's unmet straight from `gh` and `mergeability.py` every time it runs, so a
+   child resumed mid-merge on a later wake needs no separate resume path, it just
+   re-enters that step where GitHub's live state says it is — then recompute.
+5. Reschedule (via `ScheduleWakeup` if your harness supports scheduled wakeups;
+   otherwise keep an in-session loop). No eligible unparked child left and the
+   epic complete (every sub-issue `state == CLOSED`, none parked-open, and the
+   sub-issue list is non-empty — an EMPTY children fetch is NEVER completion; treat
+   it as a recovery failure and STOP to diagnose, since `epic_complete([])` is
+   vacuously true and closing a live epic on a bad fetch is unrecoverable) → apply
+   the epic-completion rule, final report, TERMINATE.
+
+**Merging is the one serialized step.** Everything upstream of it — worktree
+setup, context, pin, implementation, gates, pre-PR reviews, PR-open, prose-gate
+resolution — runs across the whole wave concurrently. Only the merge phase is
+width-one: strict up-to-date checks mean two PRs merging at once would invalidate
+each other's rebase, so the FIFO merge queue admits `merge_queue[0]` alone,
+letting each PR rebase exactly once onto the `main` its predecessor just
+produced. Parallelism buys the wave everything before that line.
+
+**A drive subagent owns exactly one child** — dispatched per wave member if your
+harness supports subagents, otherwise executed inline, sequentially, in
+merge-queue order (`--serial` forces this path even when subagents are
+available): worktree → context → pin → implement → `pre-review` gates → pre-PR
+reviews → PR-open → Status = In Review → prose-gate resolution, ending when every
+prose gate is clean. It NEVER rebases for merge, NEVER arms `--auto`, NEVER
+merges, and never touches another child's worktree or branch. Prose-gate
+resolution stays inside the parallel region deliberately: bot-review latency
+(CI, CodeRabbit, Copilot, Claude Review) is the largest single cost in a child's
+lifecycle, and serializing it would surrender most of the parallel win.
+
+**Concurrency is capped twice**: globally by `epic-config.max_parallel`
+(`MAX_PARALLEL`, default 3) across all involved repos, and per repo by that
+repo's `worktrees.max_concurrent` — `schedule.py`'s `runnable()` enforces both
+when it computes the wave.
 
 **Unattended invariants:** no interactive questions of any kind (on an
 architectural fork: pick the
@@ -400,50 +442,34 @@ default exists. HARD EXCEPTION: for a contract/API-defining child or a P0 child,
 auto-decide an architectural fork — park for human input instead; a wrong default there
 is consumed downstream before any human sees it). Stateless — recover ALL
 state each wake from `gh` (epic-config, sub-issues, blockedBy, Project fields,
-PR map, `git worktree list`). **Never STOP or park with auto-merge armed unless
-`mergeability.py`'s requirement set is empty** — on any park/STOP that leaves a PR
-behind while `--auto` is armed, run `gh pr merge <pr> --disable-auto` first and
-record it in the FAILED/park comment. Tunables (do not exceed): `CI_ESTIMATE=420s`,
-`CONFLICT_ATTEMPTS=2`, `MAX_WAIT_CYCLES=12`,
-`GLOBAL_PARK_THRESHOLD=3`, `CONSECUTIVE_PARK_HALT=2`. The review loops (step-1 pin,
-pre-PR reviews) are not in this list — they run to convergence per the
-convergence contract above, bounded only by `REPIN_ATTEMPTS`,
-`CHILD_DRIVE_CEILING_S`, and `PR_WATCH_DEADLINE_S`.
+PR map, `git worktree list`). **Never STOP or park with `--auto` armed** — run
+`gh pr merge <pr> --disable-auto` first and record it.
 
-**Per-cycle:** recover & select (no eligible, unparked child left → if the epic is complete (all children CLOSED, none parked-open) apply the epic-completion rule (close epic if open + epic Status=Done); then final report, TERMINATE) → resume check (open PR from a prior cycle → verify worktree/branch
-integrity, then jump to fix-loop; closed-unmerged PR with worktree present →
-closed-unmerged PR recovery) → preflight HARD checks → drive to PR → merge phase → on
-MERGED: Status=Done + sweep → reschedule next cycle (via `ScheduleWakeup` if your
-harness supports scheduled wakeups; otherwise keep an in-session loop, sleeping
-between polls). On resume into a
-fix-loop: fetch the PR head SHA and confirm the local branch is fast-forwardable with a
-clean working tree before touching it; on divergence, rebase/reconcile within
-`CONFLICT_ATTEMPTS` or park with a diagnostic — NEVER force-overwrite. Sleep only for
-CI/CodeRabbit/Copilot waits
-(~`CI_ESTIMATE`, then 300–600s wakes), capped at `MAX_WAIT_CYCLES` total wakes per
-stuck wait; never idle-burn. A CI check or review verdict that never arrives within
-`MAX_WAIT_CYCLES` → park the child with a precise diagnostic (name the check/reviewer
-that never posted) rather than rescheduling forever.
+Tunables (do not exceed): `MAX_PARALLEL=3`, `STALL_ROUNDS=2`, `REPIN_ATTEMPTS=1`,
+`PR_WATCH_DEADLINE_S=3600`, `CHILD_DRIVE_CEILING_S=7200`, `CONFLICT_ATTEMPTS=2`,
+`PARK_SIGNATURE_THRESHOLD=3`. `STALL_ROUNDS` names the convergence contract's
+two-consecutive-`no_progress` threshold; the rest are shared with the per-child
+mechanics described above. CI/CodeRabbit/Copilot waits are bounded by
+`PR_WATCH_DEADLINE_S` via `pr_watch.py`, never a fixed sleep count — a wait that
+outlives its deadline parks the child with a precise diagnostic naming the
+check/reviewer that never posted, rather than rescheduling forever.
 
 **Circuit breakers:**
-- Per-issue budget exhausted / gate unfixable / a subagent BLOCKED with no
-  defensible path (if your harness runs steps via subagents — otherwise an inline
-  step stalled the same way) / `MAX_WAIT_CYCLES` exceeded → **park**: if `--auto`
-  is armed, FIRST run
-  `gh pr merge <pr> --disable-auto`; comment `FAILED: <precise reason + evidence URLs>`
-  on the child (the durable parked-marker; note the disarm), set Status = **Parked**,
-  leave worktree + PR intact, continue with the next unblocked child. Children blocked
-  by a parked child are skipped.
-- Merge-deadlock (armed but unmerged after `MAX_WAIT_CYCLES` wait cycles at the head
-  of the merge queue) → disarm `--auto` (`gh pr merge <pr> --disable-auto`), re-run
-  `mergeability.py` to name the actual unmet requirement, then park with that
-  diagnosis.
-- **Global halt** (no reschedule, full report): `CONSECUTIVE_PARK_HALT` consecutive
-  parks, OR total parked ≥ `GLOBAL_PARK_THRESHOLD`, OR a parked child that every
-  remaining child transitively depends on (compute from the `blockedBy` graph).
-  Assume systemic cause (CI down, `main` broken, ruleset changed — re-verify
-  epic.yaml `merge` facts against the live ruleset:
-  `gh api repos/<owner>/<repo>/rules/branches/main`).
+- Convergence stall after re-pin / gate unfixable / a resource ceiling exceeded /
+  a subagent BLOCKED with no defensible path (if your harness runs steps via
+  subagents — otherwise an inline step stalled the same way) → **park**: if
+  `--auto` is armed, FIRST run `gh pr merge <pr> --disable-auto`; comment
+  `FAILED: <precise reason + evidence URLs>` on the child, with a machine-readable
+  trailer `epic-park: {"code":…, "gate":…, "signature":…, "waiting_on_human":…}`;
+  set Status = **Parked**; leave worktree + PR intact. **Siblings continue** — a
+  park never stalls the wave, and the merge queue keeps draining around it.
+- `approval-missing` parks are `waiting_on_human: true` and are excluded from the
+  systemic-cause count: an epic correctly waiting on your approval is working.
+- **Global halt** (no reschedule, full report) exactly when `schedule.py` returns
+  a halt reason: `systemic:<signature>` (`PARK_SIGNATURE_THRESHOLD` parks sharing
+  one signature — assume CI down, `main` broken or a ruleset change, and
+  re-verify via `gh api repos/<owner>/<repo>/rules/branches/main`),
+  `no-runnable-work`, or `transitive-block`.
 
 ## Failure handling
 
