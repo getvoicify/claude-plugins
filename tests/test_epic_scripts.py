@@ -1172,3 +1172,53 @@ def test_snapshot_skips_commented_review():
     }
     snap = snapshot(pr, [])
     assert snap["reviewer"] == "APPROVED"
+
+
+# Task 11: status.py — drift, sweep plan, completion
+
+from status import drift, epic_complete, sweep_plan
+
+
+def test_epic_complete_requires_every_child_closed():
+    assert epic_complete([child(3, 0, state="CLOSED")]) is True
+    assert epic_complete([child(3, 0, state="CLOSED"), child(4, 1)]) is False
+
+
+def test_epic_complete_counts_closed_as_not_planned():
+    kids = [child(3, 0, state="CLOSED"), child(4, 1, state="CLOSED")]
+    assert epic_complete(kids) is True
+
+
+def test_drift_flags_closed_child_not_marked_done():
+    kid = child(3, 0, state="CLOSED")
+    kid["status"] = "In Review"
+    assert drift([kid], {"state": "OPEN", "status": "In Progress"}) == [
+        {"target": "child:3", "field": "status", "actual": "In Review",
+         "expected": "Done"}
+    ]
+
+
+def test_drift_flags_closed_complete_epic_not_done():
+    kid = child(3, 0, state="CLOSED")
+    kid["status"] = "Done"
+    epic = {"state": "CLOSED", "status": "In Progress"}
+    assert drift([kid], epic) == [
+        {"target": "epic", "field": "status", "actual": "In Progress",
+         "expected": "Done"}
+    ]
+
+
+def test_drift_does_not_touch_open_epic_status():
+    kid = child(3, 0)
+    kid["status"] = "In Progress"
+    assert drift([kid], {"state": "OPEN", "status": "In Progress"}) == []
+
+
+def test_sweep_plan_removes_worktrees_only_for_merged_prs():
+    merged = child(3, 0, state="CLOSED",
+                   pr={"number": 101, "state": "MERGED"}, branch="dark-mode-3")
+    open_pr = child(4, 1, pr={"number": 102, "state": "OPEN"},
+                    branch="dark-mode-4")
+    assert sweep_plan([merged, open_pr]) == [
+        {"child": 3, "action": "remove-worktree", "branch": "dark-mode-3"}
+    ]
