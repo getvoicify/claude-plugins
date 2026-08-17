@@ -33,7 +33,7 @@ def snapshot(pr, threads):
                     # SUCCESS in StatusContext counts as passing (like NEUTRAL, SKIPPED in CheckRun)
                     pass  # Don't set has_pending or has_failure
                 else:
-                    # Unrecognized state (including None): treat as pending (fail-open)
+                    # Unrecognized state (including None): treat as pending (fail-closed)
                     has_pending = True
             else:
                 # Modern CheckRun

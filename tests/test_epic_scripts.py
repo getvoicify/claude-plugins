@@ -957,7 +957,6 @@ def test_main_resilience_terminates_at_five_consecutive_failures(monkeypatch):
 
     # Capture stdout to check the error event
     captured_output = []
-    original_print = __builtins__['print']
     monkeypatch.setattr("builtins.print", lambda x: captured_output.append(x))
 
     result = main(["--repo", "a/b", "--pr", "1", "--await", "checks", "--deadline", "10000"])
@@ -969,48 +968,63 @@ def test_main_resilience_terminates_at_five_consecutive_failures(monkeypatch):
 
 
 def test_main_resilience_counter_resets_on_success(monkeypatch):
-    """3 fails, 1 success with new state, 1 more fail → returns 0 (success before 5 fails).
+    """Counter resets on success: 4 fails → success (no change) → 4 fails → success (change) → returns 0, no error event.
 
-    GUARDS: counter reset on successful _fetch prevents premature error termination.
-    WOULD FAIL if: counter never reset (would accumulate past 5 and emit error).
+    GUARDS: consecutive_errors = 0 on successful _fetch.
+    WOULD FAIL if: reset deleted → counter accumulates 4+4=8 (exceeds 5) → error event emitted, returns 1.
     """
     from pr_watch import main
     import json
 
     fetch_call_count = [0]
+    pending_snapshot = {
+        "headRefOid": "a1b2c3",
+        "statusCheckRollup": [
+            {"name": "unit", "status": "IN_PROGRESS", "conclusion": None}
+        ],
+        "reviews": [],
+    }
+    success_snapshot = {
+        "headRefOid": "a1b2c3",
+        "statusCheckRollup": [
+            {"name": "unit", "status": "COMPLETED", "conclusion": "SUCCESS"}
+        ],
+        "reviews": [],
+    }
 
     def fetching_pattern(repo, pr_number):
         fetch_call_count[0] += 1
-        # Initial (1): PENDING
-        # Calls 2-4: fail (3 consecutive)
-        # Call 5: success with state change (counter resets to 0)
+        # Call 1: initial PENDING (enters loop)
+        # Calls 2-5: fail (4 consecutive)
+        # Call 6: success, returns IDENTICAL PENDING (no change, no event, counter resets)
+        # Calls 7-10: fail (4 consecutive again)
+        # Call 11: success, returns SUCCESS (change, diff_event fires, returns 0)
         if fetch_call_count[0] == 1:
-            return {
-                "headRefOid": "a1b2c3",
-                "statusCheckRollup": [
-                    {"name": "unit", "status": "IN_PROGRESS", "conclusion": None}
-                ],
-                "reviews": [],
-            }, []
-        if fetch_call_count[0] in {2, 3, 4}:
+            return pending_snapshot, []
+        if fetch_call_count[0] in {2, 3, 4, 5}:
             raise gh.GhError(502, "Bad Gateway")
-        if fetch_call_count[0] == 5:
-            # Success: state changed to SUCCESS (settles the awaited key)
-            return {
-                "headRefOid": "a1b2c3",
-                "statusCheckRollup": [
-                    {"name": "unit", "status": "COMPLETED", "conclusion": "SUCCESS"}
-                ],
-                "reviews": [],
-            }, []
-        raise gh.GhError(502, "Bad Gateway")
+        if fetch_call_count[0] == 6:
+            # Success, but identical snapshot (no change)
+            return pending_snapshot, []
+        if fetch_call_count[0] in {7, 8, 9, 10}:
+            raise gh.GhError(502, "Bad Gateway")
+        if fetch_call_count[0] == 11:
+            # Success with real change
+            return success_snapshot, []
+        raise gh.GhError(502, "Should not reach")
 
     monkeypatch.setattr("pr_watch._fetch", fetching_pattern)
     monkeypatch.setattr("pr_watch.time.sleep", lambda x: None)
 
+    captured_output = []
+    monkeypatch.setattr("builtins.print", lambda x: captured_output.append(x))
+
     result = main(["--repo", "a/b", "--pr", "1", "--await", "checks", "--deadline", "10000"])
-    # Should return 0 because state changed on call 5 (before reaching 5 consecutive failures)
     assert result == 0
+    # Verify no error event was emitted (would have one if counter wasn't reset)
+    for output in captured_output:
+        event = json.loads(output)
+        assert event["event"] != "error", "Counter was not reset: error event should not have been emitted"
 
 
 # Finding 3: settled state detection
