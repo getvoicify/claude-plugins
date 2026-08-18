@@ -476,16 +476,30 @@ def test_blocked_state_with_no_other_requirements_is_reported():
 
 def test_unstable_mergeable_state_not_blocked_unexplained():
     """Finding 1: UNSTABLE is mergeable, should not emit blocked-unexplained."""
+    # No other requirement is present, so the ONLY thing standing between an
+    # empty requirement set and a spurious "blocked-unexplained:UNSTABLE" is
+    # `_MERGEABLE_STATES` including UNSTABLE (an earlier fixture also carried
+    # an unrelated failing check, which made `reqs` non-empty for reasons
+    # having nothing to do with the state-membership check under test —
+    # `not reqs` was already False regardless of UNSTABLE's membership, so
+    # no mutation of `_MERGEABLE_STATES` could ever have flipped this
+    # fixture's result; that check has been dropped so the test actually
+    # isolates the behaviour its docstring claims to guard).
     pr = {
         "mergeStateStatus": "UNSTABLE",
         "isDraft": False,
-        "statusCheckRollup": [
-            {"name": "non-required", "conclusion": "FAILURE", "status": "COMPLETED"}
-        ],
+        "statusCheckRollup": [],
     }
     reqs = requirements(pr, {}, [])
-    # UNSTABLE is mergeable; no blocked-unexplained should be emitted
-    assert "blocked-unexplained" not in codes(reqs)
+    # A bare `"blocked-unexplained" not in codes(reqs)` can never fail: every
+    # real code carries a `:<state>` suffix (e.g. "blocked-unexplained:BLOCKED"),
+    # so exact list membership on the unsuffixed string is vacuous — this
+    # checks for any code with that PREFIX instead.
+    # MUTATION: remove "UNSTABLE" from `_MERGEABLE_STATES` in mergeability.py
+    # and this assertion fails (reqs becomes ["blocked-unexplained:UNSTABLE"]),
+    # where the original vacuous form would not have.
+    assert not any(c.startswith("blocked-unexplained") for c in codes(reqs))
+    assert reqs == []
 
 
 def test_approval_missing_reported_without_ruleset_contents():
@@ -513,8 +527,17 @@ def test_statuscontext_passing_check():
     }
     ruleset = {"required_status_checks": ["commit-status"]}
     reqs = requirements(pr, ruleset, [])
-    # Passing status context should not emit any check requirement
-    assert "commit-status" not in codes(reqs)
+    # Passing status context should not emit any check requirement. A bare
+    # `"commit-status" not in codes(reqs)` can never fail: real codes are
+    # always prefixed (`check-failing:commit-status`, `check-pending:...`),
+    # so the exact string "commit-status" never appears in the list either
+    # way — this checks for the substring instead, so a regression that
+    # wrongly emits check-failing/check-pending for a passing check is
+    # actually caught.
+    # MUTATION: in `requirements()`, change the StatusContext SUCCESS branch
+    # from `pass` to `reqs.append(_req(f"check-failing:{name}", ...))` and
+    # this assertion fails, where the original vacuous form would not have.
+    assert not any("commit-status" in c for c in codes(reqs))
     # And it should not emit check-missing when it's required
     assert "check-missing:commit-status" not in codes(reqs)
 
@@ -596,6 +619,21 @@ def test_fingerprint_ignores_anchor_movement():
 def test_fingerprint_normalizes_whitespace_and_case():
     assert fingerprint(finding("Missing  Retry")) == fingerprint(
         finding("missing retry")
+    )
+
+
+def test_fingerprint_ignores_code_span_content():
+    # GUARDS: `_CODE_SPAN.sub` strips backtick-delimited code spans before
+    # normalizing a claim, so two findings differing only in the SYMBOL named
+    # inside backticks (a rename, a different call site quoted verbatim)
+    # still fingerprint identically — the point being made is the same claim
+    # ("missing retry"), not the exact code snippet.
+    # MUTATION: delete the `_CODE_SPAN.sub(" ", claim or "")` line in
+    # `_normalize` (i.e. skip straight to using `claim or ""`) and this
+    # assertion fails, since the two claims would then differ by the code
+    # span text (`foo()` vs `bar()`).
+    assert fingerprint(finding("Missing retry in `foo()`")) == fingerprint(
+        finding("Missing retry in `bar()`")
     )
 
 
@@ -1802,14 +1840,29 @@ def test_schedule_main_populates_opened_at_from_pr_view(monkeypatch):
         {"number": 101, "state": "OPEN", "headRefName": "dark-mode-3",
          "closingIssuesReferences": {"nodes": [{"number": 3}]}},
     ]}}}
-    graphql_calls = iter([children_resp, pr_map_resp])
+    threads_empty = {"repository": {"pullRequest": {"reviewThreads": {"nodes": []}}}}
+    graphql_calls = iter([children_resp, pr_map_resp, threads_empty])
     monkeypatch.setattr(gh_module, "graphql", lambda query, **kw: next(graphql_calls))
 
     def fake_run_json(args, cwd=None):
         if args[:2] == ["pr", "view"]:
-            return {"createdAt": "2026-01-01T00:00:00Z"}
+            # A genuinely gate-free PR: clean merge state, no checks yet
+            # posted, no reviews yet posted — real `_compute_gates` derives
+            # every gate as "clean" with NO cleared_at stamp (nothing to
+            # date a "went clean" moment from), so `became_ready_at` must
+            # still fall back to `opened_at`.
+            return {
+                "createdAt": "2026-01-01T00:00:00Z",
+                "mergeStateStatus": "CLEAN",
+                "isDraft": False,
+                "statusCheckRollup": [],
+                "reviewDecision": None,
+                "reviews": [],
+            }
         if args[:2] == ["issue", "view"]:
             return {"comments": []}
+        if args[:1] == ["api"]:
+            return []
         raise AssertionError(f"unexpected run_json: {args}")
     monkeypatch.setattr(gh_module, "run_json", fake_run_json)
     captured = []
@@ -1818,9 +1871,188 @@ def test_schedule_main_populates_opened_at_from_pr_view(monkeypatch):
     rc = main(["--epic", "42", "--repo", "acme/planning"])
     assert rc == 0
     result = json.loads(captured[0])
-    # Gate-free (empty gates dict) child with an open PR still reaches the
-    # merge queue only because opened_at was populated for the FIFO fallback.
+    # A clean-but-never-cleared child (no stamps in gate_cleared_at) reaches
+    # the merge queue only because opened_at was populated for the FIFO
+    # fallback.
     assert result["merge_queue"] == [3]
+
+
+# --- schedule.py: CRITICAL fix — the merge queue must be FIFO on gate
+# readiness, not on PR-open time. Before this fix `_populate_prs` hardcoded
+# `"gates": {}, "gate_cleared_at": {}` for every PR, so `became_ready_at`
+# always fell through to `opened_at` regardless of real gate state — a
+# gate-pending PR that opened first held the head slot ahead of a
+# merge-ready sibling, AND (worse) schedule.py had no way to tell the
+# orchestrator that a child's prose gates were still being resolved.
+
+def test_schedule_main_excludes_pending_gate_pr_and_orders_by_readiness_not_open_time(monkeypatch):
+    # Child 2's PR opened FIRST (2026-01-01) but has a check still
+    # IN_PROGRESS. Child 9's PR opened SECOND (2026-01-02) and is fully
+    # clean (checks green, review approved). A correct FIFO-ON-READINESS
+    # queue admits ONLY child 9 — child 2 is excluded entirely (it is still
+    # being driven by its own subagent), not merely sorted after.
+    # MUTATION: revert `_populate_prs` to hardcode `gates={}` and
+    # `cleared={}` for every PR (the pre-fix behaviour) — both children
+    # would then look all-clean via the opened_at fallback, and
+    # merge_queue would become [2, 9] (raw open-time order) instead of the
+    # correct [9]. This is the exact concurrency-collision bug: PR 201
+    # would be admitted to the merge phase while its own drive subagent is
+    # still resolving its pending check.
+    from schedule import main
+
+    children_resp = {
+        "repository": {"issue": {"subIssues": {"nodes": [
+            {"number": 2, "state": "OPEN", "blockedBy": {"nodes": []},
+             "projectItems": {"nodes": [{"status": {"name": "In Review"}, "priority": None}]}},
+            {"number": 9, "state": "OPEN", "blockedBy": {"nodes": []},
+             "projectItems": {"nodes": [{"status": {"name": "In Review"}, "priority": None}]}},
+        ]}}}
+    }
+    pr_map_resp = {"repository": {"pullRequests": {"nodes": [
+        {"number": 201, "state": "OPEN", "headRefName": "x-2",
+         "closingIssuesReferences": {"nodes": [{"number": 2}]}},
+        {"number": 209, "state": "OPEN", "headRefName": "x-9",
+         "closingIssuesReferences": {"nodes": [{"number": 9}]}},
+    ]}}}
+    threads_empty = {"repository": {"pullRequest": {"reviewThreads": {"nodes": []}}}}
+    graphql_calls = iter([children_resp, pr_map_resp, threads_empty, threads_empty])
+    monkeypatch.setattr(gh_module, "graphql", lambda query, **kw: next(graphql_calls))
+
+    def fake_run_json(args, cwd=None):
+        if args[:2] == ["pr", "view"]:
+            pr_number = args[2]
+            if pr_number == "201":
+                return {
+                    "createdAt": "2026-01-01T00:00:00Z",
+                    "mergeStateStatus": "BLOCKED",
+                    "isDraft": False,
+                    "statusCheckRollup": [
+                        {"name": "unit", "status": "IN_PROGRESS", "conclusion": None},
+                    ],
+                    "reviewDecision": None,
+                    "reviews": [],
+                }
+            return {
+                "createdAt": "2026-01-02T00:00:00Z",
+                "mergeStateStatus": "CLEAN",
+                "isDraft": False,
+                "statusCheckRollup": [
+                    {"name": "unit", "status": "COMPLETED", "conclusion": "SUCCESS",
+                     "completedAt": "2026-01-02T01:00:00Z"},
+                ],
+                "reviewDecision": "APPROVED",
+                "reviews": [
+                    {"author": {"login": "reviewer"}, "state": "APPROVED",
+                     "submittedAt": "2026-01-02T00:30:00Z"},
+                ],
+            }
+        if args[:1] == ["api"]:
+            return []
+        raise AssertionError(f"unexpected run_json: {args}")
+    monkeypatch.setattr(gh_module, "run_json", fake_run_json)
+    captured = []
+    monkeypatch.setattr("builtins.print", lambda x: captured.append(x))
+
+    rc = main(["--epic", "42", "--repo", "acme/planning"])
+    assert rc == 0
+    result = json.loads(captured[0])
+    assert result["merge_queue"] == [9]
+
+
+def test_compute_gates_pending_check_is_pending_not_clean():
+    # MUTATION: delete the `if has("check-pending:")` branch in
+    # `_compute_gates` (falling through to the "clean" else-branch) and this
+    # assertion fails.
+    from schedule import _compute_gates
+
+    pr_detail = {
+        "mergeStateStatus": "BLOCKED", "isDraft": False,
+        "statusCheckRollup": [{"name": "unit", "status": "IN_PROGRESS", "conclusion": None}],
+        "reviewDecision": None,
+    }
+    gates, cleared = _compute_gates(pr_detail, {}, [], [])
+    assert gates["checks"] == "pending"
+    assert "checks" not in cleared
+
+
+def test_compute_gates_failing_check_is_red():
+    # MUTATION: change the `elif any(has(p) for p in _REQUIRED_CHECK_FAIL_PREFIXES)`
+    # branch's result from "red" to "clean" and this assertion fails.
+    from schedule import _compute_gates
+
+    pr_detail = {
+        "mergeStateStatus": "BLOCKED", "isDraft": False,
+        "statusCheckRollup": [
+            {"name": "unit", "status": "COMPLETED", "conclusion": "FAILURE"},
+        ],
+        "reviewDecision": None,
+    }
+    gates, _ = _compute_gates(pr_detail, {}, [], [])
+    assert gates["checks"] == "red"
+
+
+def test_compute_gates_clean_checks_capture_latest_completed_at():
+    # MUTATION: change `_latest`'s `max(values)` to `min(values)` (or
+    # `values[0]`) and this assertion fails — it would return the EARLIER
+    # timestamp instead of the latest one, breaking D3's "latest
+    # gate-clearing timestamp" FIFO ordering.
+    from schedule import _compute_gates
+
+    pr_detail = {
+        "mergeStateStatus": "CLEAN", "isDraft": False,
+        "statusCheckRollup": [
+            {"name": "unit", "status": "COMPLETED", "conclusion": "SUCCESS",
+             "completedAt": "2026-01-01T00:00:00Z"},
+            {"name": "lint", "status": "COMPLETED", "conclusion": "SUCCESS",
+             "completedAt": "2026-01-02T00:00:00Z"},
+        ],
+        "reviewDecision": None,
+    }
+    gates, cleared = _compute_gates(pr_detail, {}, [], [])
+    assert gates["checks"] == "clean"
+    assert cleared["checks"] == "2026-01-02T00:00:00Z"
+
+
+def test_compute_gates_changes_requested_review_is_red():
+    # MUTATION: swap the "red"/"pending" results between the
+    # changes-requested and approval-missing branches and this assertion
+    # fails.
+    from schedule import _compute_gates
+
+    pr_detail = {
+        "mergeStateStatus": "BLOCKED", "isDraft": False,
+        "statusCheckRollup": [], "reviewDecision": "CHANGES_REQUESTED",
+    }
+    gates, _ = _compute_gates(pr_detail, {}, [], [])
+    assert gates["review"] == "red"
+
+
+def test_compute_gates_draft_pr_is_red():
+    # MUTATION: delete the `gates["draft"] = "red" if ... else "clean"` line
+    # (dropping the "draft" key, or hardcoding "clean") and this assertion
+    # fails.
+    from schedule import _compute_gates
+
+    pr_detail = {
+        "mergeStateStatus": "CLEAN", "isDraft": True,
+        "statusCheckRollup": [], "reviewDecision": None,
+    }
+    gates, _ = _compute_gates(pr_detail, {}, [], [])
+    assert gates["draft"] == "red"
+
+
+def test_compute_gates_unresolved_thread_is_pending():
+    # MUTATION: invert the `has("thread-unresolved:")` ternary in
+    # `_compute_gates` and this assertion fails.
+    from schedule import _compute_gates
+
+    pr_detail = {
+        "mergeStateStatus": "BLOCKED", "isDraft": False,
+        "statusCheckRollup": [], "reviewDecision": None,
+    }
+    threads = [{"id": "t1", "isResolved": False, "path": "a.py"}]
+    gates, _ = _compute_gates(pr_detail, {}, threads, [])
+    assert gates["threads"] == "pending"
 
 
 def test_schedule_main_reports_halt_from_parks(monkeypatch):
@@ -1857,6 +2089,68 @@ def test_schedule_main_reports_halt_from_parks(monkeypatch):
     result = json.loads(captured[0])
     assert result["halt"] is not None
     assert result["halt"].startswith("systemic:")
+
+
+def test_schedule_main_finds_pr_and_park_for_child_homed_in_a_different_repo(monkeypatch):
+    # GUARDS item 5: a child living in a different repo than the epic's own
+    # (SKILL.md: "Children may live in a different repo than the cwd") must
+    # get its PR-map lookup AND its parked-issue lookup run against ITS OWN
+    # repo, not the epic's home repo. Without this, such a child never shows
+    # a PR (so it stays eligible and re-enters the wave forever, per the
+    # task's regression note) and a `epic-park:` trailer on its issue is
+    # never read (so a systemic park pattern involving it is invisible).
+    # MUTATION: revert `_fetch_pr_maps`/`_fetch_parks` to the single-repo
+    # form (`_fetch_pr_map(args.repo)` / `_fetch_parks(args.repo, children)`)
+    # and this test fails — the mock's own assertion on `owner`/`name`
+    # catches the wrong-repo call directly, and even if it didn't, child 7's
+    # PR would never be found (empty merge_queue) and its park never read.
+    from schedule import main
+
+    children_resp = {
+        "repository": {"issue": {"subIssues": {"nodes": [
+            {"number": 7, "state": "OPEN",
+             "repository": {"nameWithOwner": "acme/worker"},
+             "blockedBy": {"nodes": []},
+             "projectItems": {"nodes": [{"status": {"name": "Parked"}, "priority": None}]}},
+        ]}}}
+    }
+    pr_map_worker = {"repository": {"pullRequests": {"nodes": []}}}
+    park_comment = {
+        "body": (
+            "FAILED: ci-fix-loop stuck on flaky test\n\n"
+            'epic-park: {"code":"stall","gate":"ci-fix-loop","signature":"abc123",'
+            '"waiting_on_human":false}'
+        )
+    }
+
+    def fake_graphql(query, **kw):
+        if "epic" in kw:
+            assert (kw["owner"], kw["name"]) == ("acme", "planning")
+            return children_resp
+        assert (kw["owner"], kw["name"]) == ("acme", "worker"), kw
+        return pr_map_worker
+    monkeypatch.setattr(gh_module, "graphql", fake_graphql)
+
+    def fake_run_json(args, cwd=None):
+        assert args[:2] == ["issue", "view"]
+        repo_index = args.index("--repo") + 1
+        assert args[repo_index] == "acme/worker", args
+        return {"comments": [park_comment]}
+    monkeypatch.setattr(gh_module, "run_json", fake_run_json)
+    captured = []
+    monkeypatch.setattr("builtins.print", lambda x: captured.append(x))
+
+    rc = main(["--epic", "42", "--repo", "acme/planning"])
+    result = json.loads(captured[0])
+    # Only ONE park (below the systemic-signature threshold of 3), so the
+    # halt comes from the ordinary "no eligible unparked child" path, not
+    # "systemic:<sig>" — this confirms the park WAS read (a lone OPEN+parked
+    # child with nothing else runnable halts as "no-runnable-work"; if the
+    # park comment had never been fetched at all, `parked` status alone
+    # already drives this same halt, so the REAL proof the fetch ran against
+    # the right repo is the mock's own assertion above, not this halt value).
+    assert result["halt"] == "no-runnable-work"
+    assert rc == 1
 
 
 def test_schedule_main_exits_two_on_gherror(monkeypatch):
@@ -1947,6 +2241,57 @@ def test_status_main_sweep_plan_only_when_flag_passed(monkeypatch):
     assert rc == 0
     assert json.loads(captured2[0])["sweep_plan"] == [
         {"child": 3, "action": "remove-worktree", "branch": "dark-mode-3"}
+    ]
+
+
+def test_status_main_finds_pr_for_child_homed_in_a_different_repo(monkeypatch):
+    # GUARDS item 5: a child living in a different repo than the epic's own
+    # (SKILL.md: "Children may live in a different repo than the cwd") must
+    # still get its PR/branch populated — from a PR-map query run against
+    # the CHILD's repo, not silently against the epic's home repo only.
+    # MUTATION: revert `_fetch` to build a single `_fetch_pr_map(repo)` (the
+    # epic's own repo) instead of `_fetch_pr_maps` keyed per child repo, and
+    # this test fails: child 7's PR lives in "acme/worker", which the epic's
+    # own "acme/planning" PR-map query would never see, so `child["pr"]`
+    # would stay None and `sweep_plan` would stay empty.
+    from status import main
+
+    data = {
+        "repository": {"issue": {
+            "state": "OPEN",
+            "projectItems": {"nodes": []},
+            "subIssues": {"nodes": [
+                {"number": 7, "state": "CLOSED",
+                 "repository": {"nameWithOwner": "acme/worker"},
+                 "projectItems": {"nodes": [{"status": {"name": "Done"}}]}},
+            ]},
+        }}
+    }
+    pr_map_worker = {"repository": {"pullRequests": {"nodes": [
+        {"number": 55, "state": "MERGED", "headRefName": "child-7",
+         "closingIssuesReferences": {"nodes": [{"number": 7}]}},
+    ]}}}
+
+    def fake_graphql(query, **kw):
+        if "epic" in kw:
+            assert (kw["owner"], kw["name"]) == ("acme", "planning")
+            return data
+        # The PR-map query MUST run against the CHILD's own repo
+        # (acme/worker) — asserting it here (rather than trusting whichever
+        # response a repo-agnostic queue would hand back) is what makes this
+        # test actually fail if `_fetch` reverts to querying only the
+        # epic's home repo.
+        assert (kw["owner"], kw["name"]) == ("acme", "worker"), kw
+        return pr_map_worker
+    monkeypatch.setattr(gh_module, "graphql", fake_graphql)
+    captured = []
+    monkeypatch.setattr("builtins.print", lambda x: captured.append(x))
+
+    rc = main(["--epic", "42", "--repo", "acme/planning", "--sweep-plan"])
+    assert rc == 0
+    result = json.loads(captured[0])
+    assert result["sweep_plan"] == [
+        {"child": 7, "action": "remove-worktree", "branch": "child-7"}
     ]
 
 
