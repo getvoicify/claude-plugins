@@ -434,9 +434,11 @@ resolution stays inside the parallel region deliberately: bot-review latency
 lifecycle, and serializing it would surrender most of the parallel win.
 
 **Concurrency is capped twice**: globally by `epic-config.max_parallel`
-(`MAX_PARALLEL`, default 3) across all involved repos, and per repo by that
-repo's `worktrees.max_concurrent` — `schedule.py`'s `runnable()` enforces both
-when it computes the wave.
+(`MAX_PARALLEL`, default 3) across all involved repos — enforced by
+`schedule.py`'s `runnable()` when it computes the wave — and per repo by
+that repo's `worktrees.max_concurrent`, enforced by `preflight.py`'s
+`check()` via its `concurrency-cap` violation before each child's drive
+starts.
 
 **Unattended invariants:** no interactive questions of any kind (on an
 architectural fork: pick the

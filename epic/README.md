@@ -55,20 +55,25 @@ files are thin shims that read and follow the matching SKILL.md, so the familiar
 
 ## Concurrency
 
-Two independent caps bound how many children run at once, enforced together
-by `schedule.py`'s `runnable()`:
+Two independent caps bound how many children run at once, each enforced by a
+different script — they are not the same check:
 
 - **Global**, across every repo the epic touches: `epic-config.max_parallel`
   (an optional int in the epic issue's `epic-config` block) — **defaults to
-  3** when omitted (`epic/scripts/config.py` applies this default).
+  3** when omitted (`epic/scripts/config.py` applies this default). Enforced
+  by `schedule.py`'s `runnable(children, max_parallel, in_flight)` when it
+  computes the wave; `runnable()` takes no repo argument and never sees
+  `worktrees.max_concurrent` — it only bounds the global count.
 - **Per repo**: that repo's `worktrees.max_concurrent` in its
   `.agents/epic.yaml` (or the `.claude/epic.yaml` fallback) — **also
   defaults to 3**. This per-repo default was previously undocumented (a gap
-  flagged in review); it is recorded here explicitly. Unlike
-  `epic-config.max_parallel`, no script currently supplies this fallback in
-  code — `preflight.py --max-concurrent` is a required argument with no
-  built-in default — so set `worktrees.max_concurrent` explicitly in each
-  working repo's epic.yaml rather than relying on an implicit value.
+  flagged in review); it is recorded here explicitly. Enforced by
+  `preflight.py`'s `check()` via its `concurrency-cap` violation, run before
+  each child's drive starts. Unlike `epic-config.max_parallel`, no script
+  currently supplies this fallback in code — `preflight.py --max-concurrent`
+  is a required argument with no built-in default — so set
+  `worktrees.max_concurrent` explicitly in each working repo's epic.yaml
+  rather than relying on an implicit value.
 
 Regardless of wave width, merging stays serialized to one PR at a time: the
 FIFO merge queue `schedule.py` returns admits only its head, so each PR
@@ -80,10 +85,12 @@ the driving harness has no subagent support).
 ## Scripts
 
 `epic/skills/epic/SKILL.md` shells out to nine modules under `epic/scripts/`
-instead of re-deriving their algorithms in prose. Every script is a pure-Python
-CLI (only `gh.py` shells out to `gh`/`git`; see
+instead of re-deriving their algorithms in prose. Eight of the nine are
+pure-Python CLIs; `gh.py` is a library — the sole module that shells out to
+`gh`/`git` on the other eight's behalf (see
 [github-graphql.md](skills/epic/references/github-graphql.md) for the queries
-the GraphQL-issuing scripts run) and follows the same exit-code convention:
+the GraphQL-issuing scripts run). The eight CLIs follow the same exit-code
+convention:
 **`0`** success, **`1`** a definite negative answer the driver acts on
 (violations found, requirements unmet, a stall/no-progress signal), **`2`** a
 usage/config error — except where noted below, since not every script has a
