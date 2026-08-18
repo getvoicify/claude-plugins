@@ -1,6 +1,6 @@
 {
   "name": "epic",
-  "version": "0.14.0",
+  "version": "0.15.0",
   "description": "Unified GitHub epic driver: drive epics via sub-issues + ProjectV2, brainstorm new epics into existence, migrate legacy task-list epics",
   "skills": "./epic/skills/"
 }
