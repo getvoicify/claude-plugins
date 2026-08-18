@@ -17,7 +17,14 @@ def _priority_rank(child):
 
 
 def runnable(children, max_parallel, in_flight):
-    """Children eligible to START driving now, in drive order."""
+    """Children eligible to START driving now, in drive order.
+
+    Excludes a child already being driven (Status "In Progress", no PR yet)
+    from its own eligible set — the caller counts exactly that set as
+    `in_flight`. Keeping the two sets disjoint is what stops an in-flight
+    child from both consuming a capacity slot AND re-appearing in the wave,
+    which would starve an eligible sibling despite free capacity.
+    """
     closed = {c["number"] for c in children if c["state"] == "CLOSED"}
     eligible = [
         c
@@ -25,6 +32,7 @@ def runnable(children, max_parallel, in_flight):
         if c["state"] == "OPEN"
         and not c["parked"]
         and c.get("pr") is None
+        and c.get("status") != "In Progress"
         and all(b in closed for b in c["blocked_by"])
     ]
     eligible.sort(key=lambda c: (c["position"], _priority_rank(c), c["number"]))
@@ -177,24 +185,25 @@ def _fetch_pr_map(repo):
 def _populate_prs(repo, children, pr_map):
     """Attach each child's PR, including `opened_at` from a dedicated `gh pr
     view --json createdAt` call — the FIFO merge-queue fallback for
-    gate-free/absent-gate children depends on this field being present."""
+    gate-free/absent-gate children depends on this field being present.
+
+    A failed lookup is NOT swallowed into a silently-None opened_at (that
+    would re-strand the child from the merge queue, the exact bug this
+    field exists to fix) — it propagates to main()'s GhError handler
+    instead, which exits 2 with the standard error shape.
+    """
     for child in children:
         pr = pr_map.get(child["number"])
         if not pr:
             continue
-        opened_at = None
-        try:
-            view = gh.run_json(
-                ["pr", "view", str(pr["number"]), "--repo", repo, "--json", "createdAt"]
-            )
-            opened_at = view.get("createdAt")
-        except gh.GhError:
-            opened_at = None
+        view = gh.run_json(
+            ["pr", "view", str(pr["number"]), "--repo", repo, "--json", "createdAt"]
+        )
         child["pr"] = {
             "state": pr["state"],
             "gates": {},
             "gate_cleared_at": {},
-            "opened_at": opened_at,
+            "opened_at": view.get("createdAt"),
         }
 
 

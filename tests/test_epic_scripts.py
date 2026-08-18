@@ -1962,3 +1962,139 @@ def test_status_main_exits_two_on_gherror(monkeypatch):
     rc = main(["--epic", "42", "--repo", "acme/planning"])
     assert rc == 2
     assert "error" in json.loads(captured[0])
+
+
+# --- Review fixes: 4 defects + 2 minor follow-ups ---------------------------
+
+# 1 (Critical): verify_pin.py's content fetch must issue a real GET. `-f`
+# switches `gh api` to POST, which the contents endpoint rejects — this test
+# pins the exact shape of the call so a future edit cannot silently
+# reintroduce `-f`.
+
+def test_verify_pin_fetch_source_issues_get_not_post(monkeypatch):
+    from verify_pin import _fetch_source
+    import base64
+
+    captured = []
+
+    def fake_run_json(args, cwd=None):
+        captured.append(args)
+        return {"content": base64.b64encode(b"some content").decode()}
+
+    monkeypatch.setattr(gh_module, "run_json", fake_run_json)
+    _fetch_source("acme/app", "epic/scripts/gh.py", "main")
+
+    args = captured[0]
+    assert "-f" not in args, f"content fetch must not use -f (POST), got: {args}"
+    assert any("repos/acme/app/contents/epic/scripts/gh.py" in a for a in args)
+    assert any("ref=main" in a for a in args), f"ref must still be requested: {args}"
+
+
+# 2 (Important): preflight worktree resolution must match the LONGEST path
+# prefix, not the first match — otherwise a linked worktree nested under the
+# main checkout (this repo's own layout) matches the main entry first, and
+# the nested-worktree HARD check silently never fires.
+
+def test_preflight_fetch_matches_longest_worktree_path_prefix(monkeypatch):
+    from preflight import _fetch
+
+    main_path = "/repo"
+    linked_path = "/repo/.claude/worktrees/child-1"
+    porcelain = _porcelain([(main_path, "main", False), (linked_path, "dark-mode-1", False)])
+    monkeypatch.setattr(gh_module, "run_git", lambda args, cwd=None: porcelain)
+    monkeypatch.setattr(
+        gh_module, "run_json", lambda args, cwd=None: {"defaultBranchRef": {"name": "main"}}
+    )
+    monkeypatch.setattr("preflight.os.getcwd", lambda: linked_path)
+
+    names, inside_worktree, invalid_start = _fetch("dark-mode")
+    # cwd is inside the LINKED worktree (deeper, longer-path match), not the
+    # main checkout whose path merely happens to be a string prefix of it.
+    assert inside_worktree is True
+    # And invalid_start must come from the linked worktree's OWN branch
+    # (dark-mode-1, not the default branch "main" borrowed from main_entry).
+    assert invalid_start is False
+
+
+# 4 (Important): runnable() must exclude children already being driven (an
+# In Progress status with no PR yet) from its own eligible set, so the set
+# schedule.py counts as in_flight and the set runnable() treats as eligible
+# are disjoint. Without this, an In Progress child both consumes a capacity
+# slot AND re-appears in the wave, starving a Todo sibling despite free
+# capacity.
+
+def test_runnable_excludes_children_already_in_flight():
+    in_progress = child(1, 0, status="In Progress")
+    todo = child(2, 1, status="Todo")
+    # max_parallel=2, in_flight=1 (child 1 is the one in flight) — capacity
+    # for NEW starts is 1. Without the fix, child 1 (In Progress) is also
+    # eligible and sorts first by position, starving child 2 even though
+    # there is free capacity for it.
+    assert runnable([in_progress, todo], max_parallel=2, in_flight=1) == [2]
+
+
+def test_runnable_still_includes_todo_children_without_status():
+    # GUARDS backward compatibility: existing callers/tests build children
+    # via child() with NO "status" key at all. c.get("status") must default
+    # to something that never equals "In Progress" (None), not exclude
+    # everything.
+    kids = [child(5, 1), child(3, 0)]
+    assert runnable(kids, 3, 0) == [3, 5]
+
+
+# Minor: preflight's default-branch lookup must fail CLOSED (exit 2), not
+# silently fail open with default_branch=None (which would make the
+# detached/default-branch half of invalid-start unenforceable whenever
+# `gh repo view` errors).
+
+def test_preflight_main_exits_two_when_default_branch_lookup_fails(monkeypatch):
+    import os
+    from preflight import main
+
+    cwd = os.getcwd()
+    porcelain = _porcelain([(cwd, "feature-xyz", False)])
+    monkeypatch.setattr(gh_module, "run_git", lambda args, cwd=None: porcelain)
+
+    def raise_gherror(args, cwd=None):
+        raise gh.GhError(1, "HTTP 500: Internal Server Error")
+    monkeypatch.setattr(gh_module, "run_json", raise_gherror)
+    captured = []
+    monkeypatch.setattr("builtins.print", lambda x: captured.append(x))
+
+    rc = main(["--prefix", "dark-mode", "--child", "12", "--max-concurrent", "3"])
+    assert rc == 2
+    assert "error" in json.loads(captured[0])
+
+
+# Minor: schedule.py's per-PR `gh pr view --json createdAt` call must not
+# swallow a GhError into a silently-None opened_at (which re-strands the
+# child from the merge queue exactly like the bug this task fixed) — it
+# must surface as a normal CLI error instead.
+
+def test_schedule_main_surfaces_gherror_from_pr_view_instead_of_swallowing(monkeypatch):
+    from schedule import main
+
+    children_resp = {
+        "repository": {"issue": {"subIssues": {"nodes": [
+            {"number": 3, "state": "OPEN", "blockedBy": {"nodes": []},
+             "projectItems": {"nodes": [{"status": {"name": "In Review"}, "priority": None}]}},
+        ]}}}
+    }
+    pr_map_resp = {"repository": {"pullRequests": {"nodes": [
+        {"number": 101, "state": "OPEN", "headRefName": "dark-mode-3",
+         "closingIssuesReferences": {"nodes": [{"number": 3}]}},
+    ]}}}
+    graphql_calls = iter([children_resp, pr_map_resp])
+    monkeypatch.setattr(gh_module, "graphql", lambda query, **kw: next(graphql_calls))
+
+    def fake_run_json(args, cwd=None):
+        if args[:2] == ["pr", "view"]:
+            raise gh.GhError(1, "HTTP 500: Internal Server Error")
+        raise AssertionError(f"unexpected run_json: {args}")
+    monkeypatch.setattr(gh_module, "run_json", fake_run_json)
+    captured = []
+    monkeypatch.setattr("builtins.print", lambda x: captured.append(x))
+
+    rc = main(["--epic", "42", "--repo", "acme/planning"])
+    assert rc == 2
+    assert "error" in json.loads(captured[0])

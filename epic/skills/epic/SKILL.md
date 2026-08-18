@@ -391,8 +391,11 @@ leave a STOPPED PR armed to auto-merge unresolved findings.
 An orchestrator loop. Each cycle:
 
 1. Recover ALL state from `gh` — stateless recovery is unchanged and HARD.
-2. `python epic/scripts/schedule.py --epic <n>` → the runnable wave, the FIFO
-   merge queue, and any halt reason.
+2. `python epic/scripts/schedule.py --epic <n> --repo <owner/name>` → the
+   runnable wave, the FIFO merge queue, and any halt reason (`--repo` names
+   the epic's own home repo, already resolved in step 1 — never inferred
+   from cwd, since the epic may be homed in a separate planning repo from
+   the checkout you are standing in).
 3. Dispatch one **drive subagent per wave member, in parallel**, if your harness
    supports subagents; otherwise drive the wave sequentially, in-session, in the
    wave order `schedule.py` returned (a child without a PR yet isn't in the merge

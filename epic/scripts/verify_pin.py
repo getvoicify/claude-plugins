@@ -48,9 +48,14 @@ def _fetch_source(repo, path, ref):
 
     A 404 (or any other fetch failure) yields None, never an exception — a
     path that does not resolve is `unverifiable`, not a CLI error.
+
+    The ref MUST travel in the query string (`?ref=<ref>`), never as a `-f`
+    form value — `gh api` treats any `-f`/`-F` flag as "this is a POST", and
+    the contents endpoint rejects POST outright, which silently turned every
+    claim `unverifiable` regardless of whether it was actually stale.
     """
     try:
-        data = gh.run_json(["api", f"repos/{repo}/contents/{path}", "-f", f"ref={ref}"])
+        data = gh.run_json(["api", f"repos/{repo}/contents/{path}?ref={ref}"])
     except gh.GhError:
         return None
     content_b64 = data.get("content")

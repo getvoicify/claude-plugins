@@ -61,22 +61,29 @@ def _fetch(prefix):
 
     cwd = os.path.realpath(os.getcwd())
     main_entry = entries[0] if entries else None
+    # Match the LONGEST worktree path that contains cwd, not the first one
+    # found. Linked worktrees commonly live nested under the main checkout
+    # (this repo's own layout: `.claude/worktrees/<child>`), so the main
+    # entry's path is itself a string prefix of every linked entry's path —
+    # a first-match scan would always resolve to main and never detect that
+    # cwd is actually inside a linked (nested) worktree.
     current = None
+    best_len = -1
     for e in entries:
         p = os.path.realpath(e["path"])
-        if cwd == p or cwd.startswith(p + os.sep):
+        if (cwd == p or cwd.startswith(p + os.sep)) and len(p) > best_len:
             current = e
-            break
+            best_len = len(p)
     inside_worktree = bool(current and main_entry and current is not main_entry)
 
     current_branch = (current or {}).get("branch")
     detached = (current or {}).get("detached", False)
-    default_branch = None
-    try:
-        info = gh.run_json(["repo", "view", "--json", "defaultBranchRef"])
-        default_branch = (info.get("defaultBranchRef") or {}).get("name")
-    except gh.GhError:
-        default_branch = None
+    # No try/except here: a failure to determine the default branch must not
+    # silently mean "not invalid" — that's a safety check failing open. Let
+    # GhError propagate to main(), which exits 2 with the standard error
+    # shape instead of proceeding on an unknown answer.
+    info = gh.run_json(["repo", "view", "--json", "defaultBranchRef"])
+    default_branch = (info.get("defaultBranchRef") or {}).get("name")
     invalid_start = bool(detached or (current_branch and current_branch == default_branch))
 
     return names, inside_worktree, invalid_start
