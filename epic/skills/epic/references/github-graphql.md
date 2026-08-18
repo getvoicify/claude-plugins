@@ -324,3 +324,164 @@ cosmetic). Likewise, if the Epic type doesn't exist yet, skip tagging silently.
 ## Required token scopes
 
 `repo, project, read:org`. `createIssueType` additionally needs `admin:org` (skip if absent).
+
+## Deterministic script layer (`epic/scripts/`)
+
+Everything above is available to drive by hand. `epic/scripts/` packages the
+incantations the driver calls every cycle into small deterministic CLIs
+(Python 3 + `pyyaml`), so the driver shells out to a script instead of
+re-deriving the same query/parse logic in prose each time. This section
+documents, with runnable snippets, exactly what those scripts issue —
+verified against each script's `main()`, not reconstructed from memory.
+
+### Review threads — `pr_watch.py` and `mergeability.py`
+
+Both scripts issue the identical query (the same `_THREADS_QUERY` constant
+appears verbatim in each file):
+
+```graphql
+query($owner:String!,$name:String!,$pr:Int!){
+  repository(owner:$owner,name:$name){
+    pullRequest(number:$pr){
+      reviewThreads(first:100){nodes{id isResolved isOutdated path}}
+    }
+  }
+}
+```
+
+Run it directly:
+
+```bash
+gh api graphql -F owner=<owner> -F name=<repo> -F pr=<pr#> -f query='
+query($owner:String!,$name:String!,$pr:Int!){
+  repository(owner:$owner,name:$name){
+    pullRequest(number:$pr){
+      reviewThreads(first:100){nodes{id isResolved isOutdated path}}
+    }
+  }
+}'
+```
+
+`pr_watch.py` uses `isResolved` to compute the `threads_unresolved` count it
+polls on; `mergeability.py` uses the same field to emit a
+`thread-unresolved:<id>` requirement per unresolved thread. Neither script's
+Python currently reads `isOutdated` or `path` — they travel in the response
+for downstream use (thread routing, stale-thread detection) but are not yet
+consumed by either script.
+
+### `gh pr view --json` field sets
+
+Three scripts each request a different, narrower field set tailored to what
+they compute — there is no single shared set:
+
+| Script | `--json` fields | Used for |
+|---|---|---|
+| `pr_watch.py` | `headRefOid,statusCheckRollup,reviews,mergeStateStatus` | head-SHA change detection, check/review settlement polling |
+| `mergeability.py` | `mergeStateStatus,isDraft,statusCheckRollup,reviewDecision` | the unmet-requirement list (draft, behind/dirty, failing checks, missing approval) |
+| `schedule.py` | `createdAt` (one call per child with a mapped PR, inside `_populate_prs`) | `opened_at`, the FIFO merge-queue fallback timestamp for gate-free children |
+
+None of the three requests GitHub's `mergeable` boolean — it races the
+mergeability computation, so the driver derives the same answer
+field-by-field from `mergeStateStatus` + `statusCheckRollup` +
+`reviewDecision` + thread state instead (see "sole gating authority" below).
+
+Runnable examples:
+
+```bash
+gh pr view <pr#> --repo <owner>/<repo> --json headRefOid,statusCheckRollup,reviews,mergeStateStatus
+gh pr view <pr#> --repo <owner>/<repo> --json mergeStateStatus,isDraft,statusCheckRollup,reviewDecision
+gh pr view <pr#> --repo <owner>/<repo> --json createdAt
+```
+
+### Ruleset source of truth — `gh api repos/<owner>/<repo>/rules/branches/main`
+
+`mergeability.py` treats the repo's live branch-protection ruleset, never a
+cached or hand-maintained list, as the source of truth for which status
+checks are required:
+
+```bash
+gh api repos/<owner>/<repo>/rules/branches/main
+```
+
+It collapses the returned array to `{"required_status_checks": [...]}` by
+keeping only entries with `type == "required_status_checks"` and reading
+each one's `parameters.required_status_checks[].context`. A `404` (no
+ruleset configured on the repo) is treated as an empty ruleset — every
+reported check is then optional, `statusCheckRollup` alone drives
+requirements — never as an error.
+
+### Sub-issue / blockedBy / project-field query — `schedule.py`
+
+`schedule.py` computes the runnable wave and merge queue from one query that
+pulls every child's state, blockers, and Status/Priority project fields in a
+single round trip:
+
+```graphql
+query($owner:String!,$name:String!,$epic:Int!){
+  repository(owner:$owner,name:$name){
+    issue(number:$epic){
+      subIssues(first:100){
+        nodes{
+          number state
+          blockedBy(first:20){nodes{number}}
+          projectItems(first:5){
+            nodes{
+              status: fieldValueByName(name:"Status"){... on ProjectV2ItemFieldSingleSelectValue{name}}
+              priority: fieldValueByName(name:"Priority"){... on ProjectV2ItemFieldSingleSelectValue{name}}
+            }
+          }
+        }
+      }
+    }
+  }
+}
+```
+
+Run it directly:
+
+```bash
+gh api graphql -F owner=<owner> -F name=<repo> -F epic=<epic#> -f query='
+query($owner:String!,$name:String!,$epic:Int!){
+  repository(owner:$owner,name:$name){
+    issue(number:$epic){
+      subIssues(first:100){
+        nodes{
+          number state
+          blockedBy(first:20){nodes{number}}
+          projectItems(first:5){
+            nodes{
+              status: fieldValueByName(name:"Status"){... on ProjectV2ItemFieldSingleSelectValue{name}}
+              priority: fieldValueByName(name:"Priority"){... on ProjectV2ItemFieldSingleSelectValue{name}}
+            }
+          }
+        }
+      }
+    }
+  }
+}'
+```
+
+`schedule.py` separately re-runs the `pullRequests(first:100,
+orderBy:{field:UPDATED_AT, direction:DESC})` PR-mapping query documented
+above (see "PR-mapping rule") to attach each child's open/merged PR before
+computing the wave and the merge queue.
+
+### `mergeability.py` is the sole gating authority
+
+**`mergeability.py` is the only supported consumer of PR state, the branch
+ruleset, and review threads for a merge/no-merge decision.** The driver
+calls `python3 epic/scripts/mergeability.py --repo <owner>/<repo> --pr
+<pr#>` and acts on its `requirements` / `clean` output — it must never
+hand-roll its own mergeability judgment by reading `statusCheckRollup` or
+`mergeStateStatus` directly and inferring merge-readiness from them.
+`pr_watch.py` reads overlapping raw state (the same review-threads query, a
+different `gh pr view --json` set) but only to detect *that something
+changed* so the driver knows when to re-run `mergeability.py` — it never
+itself decides whether a PR is mergeable.
+
+**Note on this reference's origin:** the task brief that seeded this section
+named one combined `gh pr view --json` field set
+(`headRefOid,statusCheckRollup,reviews,mergeStateStatus,mergeable,
+reviewDecision,isDraft`) shared by every script. That combined set does not
+exist in the code — the table above reflects each script's actual,
+narrower request.
