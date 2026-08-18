@@ -14,7 +14,7 @@ files are thin shims that read and follow the matching SKILL.md, so the familiar
 
 | Command (Claude Code) | Canonical skill | Purpose |
 |---|---|---|
-| `/epic <epic#> [status\|next\|run\|<child#>] [--stop-at-pr]` | `skills/epic/SKILL.md` | Drive an epic. `next`/`<child#>` take one child through merge + sweep (or stop at PR with `--stop-at-pr`); `run` loops autonomously to completion. |
+| `/epic <epic#> [status\|next\|run\|<child#>] [--stop-at-pr] [--sweep] [--serial]` | `skills/epic/SKILL.md` | Drive an epic. `next`/`<child#>` take one child through merge + sweep (or stop at PR with `--stop-at-pr`); `run` loops autonomously to completion, dispatching the current wave of runnable children in parallel by default (see [Concurrency](#concurrency) below) — pass `--serial` to force one child at a time instead. `--sweep` (valid on `status` only) opts into the destructive worktree/branch/Project-field reconcile. |
 | `/epic:create [rough idea]` | `skills/create/SKILL.md` | Brainstorm session → spec + runbook (docs PR) → epic + sub-issues + dependencies + Project items. Nothing touches GitHub until you approve the breakdown. |
 | `/epic:migrate <epic#> [--repo owner/name]` | `skills/migrate/SKILL.md` | Convert a legacy task-list epic (e.g. a working repo's #101–#105) to the new model. |
 
@@ -48,13 +48,72 @@ files are thin shims that read and follow the matching SKILL.md, so the familiar
 - Local checkouts of the working repos as siblings (the driver resolves a child's
   checkout by matching `origin` URLs in the cwd's parent directory).
 - Each working repo carries `.agents/epic.yaml`, or the `.claude/epic.yaml` fallback.
+- `epic/scripts/` — the deterministic core the skills shell out to (see
+  [Scripts](#scripts)) — requires **Python 3** with **`pyyaml`** installed and
+  importable at runtime; `config.py` imports `yaml` directly and hard-fails on
+  import if it's missing.
+
+## Concurrency
+
+Two independent caps bound how many children run at once, each enforced by a
+different script — they are not the same check:
+
+- **Global**, across every repo the epic touches: `epic-config.max_parallel`
+  (an optional int in the epic issue's `epic-config` block) — **defaults to
+  3** when omitted (`epic/scripts/config.py` applies this default). Enforced
+  by `schedule.py`'s `runnable(children, max_parallel, in_flight)` when it
+  computes the wave; `runnable()` takes no repo argument and never sees
+  `worktrees.max_concurrent` — it only bounds the global count.
+- **Per repo**: that repo's `worktrees.max_concurrent` in its
+  `.agents/epic.yaml` (or the `.claude/epic.yaml` fallback) — **also
+  defaults to 3**. This per-repo default was previously undocumented (a gap
+  flagged in review); it is recorded here explicitly. Enforced by
+  `preflight.py`'s `check()` via its `concurrency-cap` violation, run before
+  each child's drive starts. Unlike `epic-config.max_parallel`, no script
+  currently supplies this fallback in code — `preflight.py --max-concurrent`
+  is a required argument with no built-in default — so set
+  `worktrees.max_concurrent` explicitly in each working repo's epic.yaml
+  rather than relying on an implicit value.
+
+Regardless of wave width, merging stays serialized to one PR at a time: the
+FIFO merge queue `schedule.py` returns admits only its head, so each PR
+rebases exactly once onto the `main` its predecessor just produced. Pass
+`--serial` to `run` to drive one child at a time end-to-end instead of
+dispatching the wave in parallel (this is also the automatic behavior when
+the driving harness has no subagent support).
+
+## Scripts
+
+`epic/skills/epic/SKILL.md` shells out to nine modules under `epic/scripts/`
+instead of re-deriving their algorithms in prose. Eight of the nine are
+pure-Python CLIs; `gh.py` is a library — the sole module that shells out to
+`gh`/`git` on the other eight's behalf (see
+[github-graphql.md](skills/epic/references/github-graphql.md) for the queries
+the GraphQL-issuing scripts run). The eight CLIs follow the same exit-code
+convention:
+**`0`** success, **`1`** a definite negative answer the driver acts on
+(violations found, requirements unmet, a stall/no-progress signal), **`2`** a
+usage/config error — except where noted below, since not every script has a
+"negative answer" to report.
+
+| Script | What it does | Invocation | Exit codes |
+|---|---|---|---|
+| `config.py` | Resolves the two-layer epic config (the epic-config block + the target repo's epic.yaml) into one JSON object | `python3 epic/scripts/config.py --epic <epic#> --repo <owner/name>` | `0` resolved; `2` config/parse error (bad YAML, invalid prefix, no project number, `gh` failure) — never returns `1` |
+| `preflight.py` | Checks the HARD worktree constraints: prefix validity, an already-existing worktree, the concurrency cap, a nested or detached/`main` start | `python3 epic/scripts/preflight.py --prefix <prefix> --child <n> --max-concurrent <n>` | `0` no violations; `1` one or more violations found; `2` `gh`/git error |
+| `schedule.py` | Computes the runnable wave, the FIFO merge queue, and any halt reason from live sub-issue, blocker, and PR state | `python3 epic/scripts/schedule.py --epic <epic#> --repo <owner/name> [--max-parallel <n>]` (`--max-parallel` defaults to 3) | `0` no halt reason; `1` a halt reason is present; `2` `gh` error |
+| `mergeability.py` | Derives the complete unmet-merge-requirement set for a PR (draft, behind/dirty, failing or missing checks, unresolved threads, review decision) — the sole gating authority, see [github-graphql.md](skills/epic/references/github-graphql.md) | `python3 epic/scripts/mergeability.py --repo <owner/name> --pr <pr#>` | `0` clean/mergeable; `1` requirements unmet; `2` `gh` error |
+| `pr_watch.py` | Blocks until a PR's head SHA, checks, reviews, or unresolved-thread count changes, or a deadline elapses | `python3 epic/scripts/pr_watch.py --repo <owner/name> --pr <pr#> --await <comma-separated snapshot keys> [--deadline <seconds>]` (`--deadline` defaults to 3600) | `0` an awaited event was observed; `1` deadline reached, or 5 consecutive `gh` errors |
+| `status.py` | Reports epic completion, Project-field drift, and (with `--sweep-plan`) which worktrees are safe to remove — read-only, never mutates | `python3 epic/scripts/status.py --epic <epic#> --repo <owner/name> [--sweep-plan]` | `0` always (the report itself carries the finding); `2` `gh` error — never returns `1` |
+| `converge.py` | Compares two rounds of review findings and reports whether the blocking set converged, made progress, or made none | `python3 epic/scripts/converge.py --prev <path> --curr <path>` | `0` `converged` or `progress`; `1` `no_progress` this round (two consecutive `1`s across driver invocations is the STALL signal); `2` file/JSON read error |
+| `verify_pin.py` | Classifies every `verified:`/`assumption:` claim in a context pin against the actual repo source at the pinned ref | `python3 epic/scripts/verify_pin.py --pin <path> [--repo <owner/name>]` (`--repo` resolves from the cwd's `origin` remote when omitted) | `0` no claim is stale; `1` at least one claim is stale; `2` the pin file can't be read |
+| `gh.py` | The sole I/O boundary: every `gh`/`git` shell-out anywhere in `epic/scripts/` goes through this module | n/a — library only, no `argparse`/`main()`; imported by the other eight scripts | n/a |
 
 ## Defaults
 
 Merge-through is the default terminal behavior everywhere (`--stop-at-pr` to opt
-out). One child in flight at a time. Worktrees live under `.worktrees/` and are
-swept only after their PR merges. Tunable budget constants are documented in the
-driver command.
+out, valid on `next`/`<child#>` only). Concurrency is governed by the two caps
+in [Concurrency](#concurrency) above. Worktrees live under `.worktrees/` (or
+`worktrees.root`) and are swept only after their PR merges.
 
 ## Migrating an existing install
 

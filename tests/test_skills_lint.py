@@ -825,3 +825,57 @@ def test_create_skill_prior_art_uses_docs_config_not_superpowers():
     assert "spec_dir" in text, (
         "create/SKILL.md must reference the docs-config `spec_dir` for prior-art"
     )
+
+
+# Task 12: Lint ratchets for the new surface (retired tunables, script existence,
+# module purity — guarding Tasks 13–16).
+
+RETIRED_TUNABLES = [
+    "PLAN_REVIEW_ROUNDS",
+    "PRE_PR_REVIEW_ROUNDS",
+    "CLAUDE_REVIEW_FIX_ROUNDS",
+    "CODERABBIT_FIX_ROUNDS",
+    "COPILOT_FIX_ROUNDS",
+    "CI_FIX_ROUNDS",
+    "CI_ESTIMATE",
+    "MAX_WAIT_CYCLES",
+    "MERGE_WAIT_CYCLES",
+    "CONSECUTIVE_PARK_HALT",
+    "GLOBAL_PARK_THRESHOLD",
+]
+
+EPIC_SCRIPTS = [
+    "config.py",
+    "converge.py",
+    "gh.py",
+    "mergeability.py",
+    "pr_watch.py",
+    "preflight.py",
+    "schedule.py",
+    "status.py",
+    "verify_pin.py",
+]
+
+
+@pytest.mark.parametrize("tunable", RETIRED_TUNABLES)
+def test_retired_tunables_absent_from_epic(tunable):
+    hits = [
+        path
+        for path in (REPO_ROOT / "epic").rglob("*.md")
+        if tunable in path.read_text()
+    ]
+    assert hits == [], f"{tunable} is retired but still appears in {hits}"
+
+
+@pytest.mark.parametrize("script", EPIC_SCRIPTS)
+def test_epic_script_exists(script):
+    assert (REPO_ROOT / "epic" / "scripts" / script).is_file()
+
+
+@pytest.mark.parametrize("script", EPIC_SCRIPTS)
+def test_only_gh_module_shells_out(script):
+    source = (REPO_ROOT / "epic" / "scripts" / script).read_text()
+    if script == "gh.py":
+        assert "subprocess" in source
+    else:
+        assert "subprocess" not in source, f"{script} must stay pure"

@@ -10,3 +10,6 @@ __pycache__/
 pytest-of-*/
 *.pyc
 .venv/
+
+# Superpowers
+.superpowers/
