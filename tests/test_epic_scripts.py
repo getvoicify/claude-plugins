@@ -1972,6 +1972,11 @@ def test_status_main_exits_two_on_gherror(monkeypatch):
 # reintroduce `-f`.
 
 def test_verify_pin_fetch_source_issues_get_not_post(monkeypatch):
+    # Asserts the EXACT args list gh.run_json receives, not a substring
+    # check — a substring check on "ref=main" would still pass a
+    # regression to `-F ref=main` (still a POST) or an added `-X POST`,
+    # since those flags/values contain the same substring. Only an exact
+    # match is airtight against that class of silent reintroduction.
     from verify_pin import _fetch_source
     import base64
 
@@ -1984,10 +1989,29 @@ def test_verify_pin_fetch_source_issues_get_not_post(monkeypatch):
     monkeypatch.setattr(gh_module, "run_json", fake_run_json)
     _fetch_source("acme/app", "epic/scripts/gh.py", "main")
 
-    args = captured[0]
-    assert "-f" not in args, f"content fetch must not use -f (POST), got: {args}"
-    assert any("repos/acme/app/contents/epic/scripts/gh.py" in a for a in args)
-    assert any("ref=main" in a for a in args), f"ref must still be requested: {args}"
+    assert captured[0] == ["api", "repos/acme/app/contents/epic/scripts/gh.py?ref=main"]
+
+
+def test_verify_pin_fetch_source_url_encodes_special_characters_in_ref(monkeypatch):
+    # An unencoded `&`/`#`/`/` in the ref corrupts the query string (`&`
+    # starts a new query param, `#` starts a fragment GitHub's API would
+    # never see). The ref must be percent-encoded before it lands in the URL.
+    from verify_pin import _fetch_source
+    import base64
+
+    captured = []
+
+    def fake_run_json(args, cwd=None):
+        captured.append(args)
+        return {"content": base64.b64encode(b"some content").decode()}
+
+    monkeypatch.setattr(gh_module, "run_json", fake_run_json)
+    _fetch_source("acme/app", "epic/scripts/gh.py", "feature/foo&bar#1")
+
+    assert captured[0] == [
+        "api",
+        "repos/acme/app/contents/epic/scripts/gh.py?ref=feature%2Ffoo%26bar%231",
+    ]
 
 
 # 2 (Important): preflight worktree resolution must match the LONGEST path
@@ -2098,3 +2122,46 @@ def test_schedule_main_surfaces_gherror_from_pr_view_instead_of_swallowing(monke
     rc = main(["--epic", "42", "--repo", "acme/planning"])
     assert rc == 2
     assert "error" in json.loads(captured[0])
+
+
+# --- Round 2: halt_reason regression from the runnable() disjointness fix --
+#
+# Excluding In-Progress/no-PR children from runnable()'s eligible set (round
+# 1, defect 4) was correct, but halt_reason()'s live-work escape only knew
+# about the open-PR form of "live but not runnable" (see the comment at
+# schedule.py's open-PR check). An In-Progress/no-PR child now falls into
+# NEITHER runnable() NOR the escape, so it was misread as a genuine blocker
+# and halt_reason returned "transitive-block" during the entirely normal
+# window between dispatch and PR-open.
+
+def test_no_halt_for_in_progress_child_without_pr_yet():
+    # GUARDS: the widened live-work escape recognizing In Progress (no PR
+    # yet) as live work, same as an open PR. WOULD FAIL (returns
+    # "transitive-block" instead of None) if the escape were reverted to
+    # only check for an open PR.
+    kids = [child(3, 0, status="In Progress")]
+    assert halt_reason(kids, [], 3) is None
+
+
+def test_halt_escape_does_not_swallow_genuine_transitive_block():
+    # GUARDS against an over-broad fix: a parked child transitively blocking
+    # its sibling, with NO live work (no open PR, no In Progress child)
+    # anywhere, must still halt. Re-asserts test_halt_when_nothing_runnable_
+    # and_epic_incomplete's fixture explicitly in this round-2 section so the
+    # "did the escape get too broad" question has its own direct answer here.
+    kids = [child(3, 0, parked=True), child(4, 1, blocked_by=[3])]
+    assert halt_reason(kids, [], 3) == "transitive-block"
+
+
+def test_halt_escape_does_not_swallow_genuine_no_runnable_work():
+    # GUARDS against an over-broad fix: an all-parked epic with no live work
+    # anywhere must still halt with "no-runnable-work".
+    kids = [child(3, 0, parked=True)]
+    assert halt_reason(kids, [], 3) == "no-runnable-work"
+
+
+def test_no_halt_while_a_child_is_in_flight_with_open_pr_still_passes():
+    # Re-affirms the PRE-EXISTING open-PR escape keeps working unchanged
+    # after widening the condition to an OR.
+    kids = [child(3, 0, pr={"number": 101, "state": "OPEN"})]
+    assert halt_reason(kids, [], 3) is None

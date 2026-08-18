@@ -5,6 +5,7 @@ import base64
 import json
 import re
 import sys
+import urllib.parse
 
 import gh
 
@@ -52,10 +53,14 @@ def _fetch_source(repo, path, ref):
     The ref MUST travel in the query string (`?ref=<ref>`), never as a `-f`
     form value — `gh api` treats any `-f`/`-F` flag as "this is a POST", and
     the contents endpoint rejects POST outright, which silently turned every
-    claim `unverifiable` regardless of whether it was actually stale.
+    claim `unverifiable` regardless of whether it was actually stale. The
+    ref is percent-encoded before it lands in the query string — an
+    unencoded `&`/`#`/`=` in a ref would otherwise corrupt the query string
+    (start a new param or truncate into a URL fragment).
     """
+    encoded_ref = urllib.parse.quote(ref, safe="")
     try:
-        data = gh.run_json(["api", f"repos/{repo}/contents/{path}?ref={ref}"])
+        data = gh.run_json(["api", f"repos/{repo}/contents/{path}?ref={encoded_ref}"])
     except gh.GhError:
         return None
     content_b64 = data.get("content")

@@ -89,11 +89,20 @@ def halt_reason(children, parks, threshold=3):
         return None
     if runnable(children, max_parallel=len(children) or 1, in_flight=0):
         return None
-    # A child with an open PR is live work that runnable() deliberately skips.
+    # Live work that runnable() deliberately excludes from its own eligible
+    # set is NOT a halt signal — two forms: a child with an open PR (past
+    # the point runnable() will start it), and a child that is In Progress
+    # with no PR yet (already being driven, between dispatch and PR-open).
+    # Both are children runnable() will never re-offer, so without this
+    # escape a perfectly healthy epic mid-dispatch reads as "no runnable
+    # work" / "transitive-block" and the run halts on top of live work.
     if any(
-        (c.get("pr") or {}).get("state") == "OPEN"
+        c["state"] == "OPEN"
+        and (
+            (c.get("pr") or {}).get("state") == "OPEN"
+            or c.get("status") == "In Progress"
+        )
         for c in children
-        if c["state"] == "OPEN"
     ):
         return None
 
