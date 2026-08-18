@@ -300,11 +300,24 @@ One blocking poller covering, in a single loop keyed on the PR's head SHA: check
 suite conclusions, the `claude-review` check and formal review state, CodeRabbit
 review state, Copilot review state, and review-thread resolution.
 
+**The `--await` vocabulary is exactly `snapshot()`'s keys** — `head`, `checks`,
+`threads_unresolved`, or a review-author **login** (e.g. `coderabbitai`,
+`copilot-pull-request-reviewer`, or a human's GitHub username) — never a check
+name or a bot's product name. `claude-review` is a required STATUS CHECK, not a
+review author, so it folds into the `checks` key, not a key of its own:
+
 ```
 $ python epic/scripts/pr_watch.py --repo o/r --pr 101 \
-    --await checks,claude-review,coderabbit --deadline 1800
-{"event":"claude-review","state":"REQUEST_CHANGES","head":"a1b2c3","waited_s":73}
+    --await checks,coderabbitai --deadline 1800
+{"event":"coderabbitai","state":"CHANGES_REQUESTED","head":"a1b2c3","waited_s":73}
 ```
+
+(An earlier version of this example passed `--await checks,claude-review,coderabbit`
+— neither `claude-review` nor `coderabbit` is a key `snapshot()` ever produces, so
+nothing would ever change and the driver would wait the full deadline and park
+falsely. See `references/github-graphql.md`'s "`pr_watch.py --await` vocabulary"
+section for the full key list and the one known divergence from
+`mergeability.py`'s required-check filtering.)
 
 It returns on the **first** awaited state change and exits, so the driver reacts
 in tens of seconds rather than at the next 300–600s wake. Timing uses

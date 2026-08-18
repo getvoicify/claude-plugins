@@ -192,6 +192,27 @@ Report only — no driving, and **read-only by default** (mutates NOTHING unless
   human (issue still open) with its worktree/branch still present, do NOT re-drive into
   the HARD uniqueness STOP — detect it and reuse/reopen the existing branch + worktree to
   continue. Ambiguous (in `run`) → park with a precise diagnostic naming the closed PR.
+- **Interrupted-drive recovery**: the same reasoning applies to a drive that never
+  reached a PR at all. `preflight.py` reports `worktree-exists` whenever a worktree
+  for this child is already present — that is correct and HARD when a SECOND drive
+  is about to start on a child ALREADY being driven THIS invocation/wave (the
+  genuine double-drive case: two concurrent drivers — dispatched as parallel
+  subagents if your harness supports them, otherwise two overlapping inline
+  invocations — on the same worktree/branch corrupt each other's work, so that STOP
+  must stay). But a worktree left over from a crashed or killed drive step (no PR
+  yet; Status may still read In Progress from before the crash) is not that case —
+  nothing is currently touching it. Distinguish the two by whether this selection is
+  what is CURRENTLY dispatching the child: if this invocation is the one about to
+  drive it (a human explicitly naming it via `<child#>`, or `run`'s own per-wave
+  dispatch deciding to resume it — see the `run` mode's stateless-recovery note
+  below for how such a child is re-surfaced), reuse the existing worktree/branch and
+  resume from wherever `gh`'s live state says the child actually is (no PR yet →
+  resume from Context/pin onward; PR open → resume from prose-gate resolution)
+  instead of hard-STOPping. If instead another drive for this exact child is
+  concurrently active in this same session, the HARD STOP
+  applies unchanged. Never guess — when it is genuinely unclear whether another
+  agent is mid-drive, `run` parks with a diagnostic naming the ambiguity;
+  interactive modes STOP and ask.
 - **Done → In Progress | Parked (reverse)**: a child re-opened after Status=Done (or
   whose merged PR was reverted) is re-eligible; on selection reset its Project Status off
   Done (→ In Progress, or Parked if it then parks).
@@ -331,7 +352,14 @@ in the merge phase — width-1 is what lets each PR rebase exactly once, onto th
      than a CI cycle completes → park with exactly that diagnosis.
    - `check-failing:<name>` → diagnose from the run, dispatch the implementer if
      your harness supports subagents (otherwise make the fix inline), push.
-   - `check-pending:<name>` → wait via `pr_watch.py`, never a fixed sleep.
+   - `check-pending:<name>` → wait via `pr_watch.py --await <keys>`, never a fixed
+     sleep. The ONLY valid `<keys>` are `pr_watch.py`'s own snapshot keys — `checks`,
+     `threads_unresolved`, `head`, or a review-author LOGIN (e.g. `coderabbitai`,
+     `copilot-pull-request-reviewer`) — never a check name like `claude-review`
+     (that folds into `checks`) and never a bot's product name spelled as its own
+     key. See `references/github-graphql.md`'s "`pr_watch.py --await` vocabulary"
+     section for the full list and a documented divergence (`checks` currently
+     aggregates every check in the rollup, not only the ruleset's required ones).
    - `check-missing:<name>` → a required check never started; diagnose why
      (workflow trigger misconfigured? branch protection stale?) rather than
      waiting forever — if it still hasn't started, park with a diagnostic naming
@@ -391,16 +419,27 @@ leave a STOPPED PR armed to auto-merge unresolved findings.
 An orchestrator loop. Each cycle:
 
 1. Recover ALL state from `gh` — stateless recovery is unchanged and HARD.
-2. `python epic/scripts/schedule.py --epic <n> --repo <owner/name>` → the
-   runnable wave, the FIFO merge queue, and any halt reason (`--repo` names
-   the epic's own home repo, already resolved in step 1 — never inferred
-   from cwd, since the epic may be homed in a separate planning repo from
-   the checkout you are standing in).
+2. `python epic/scripts/schedule.py --epic <n> --repo <owner/name> --max-parallel
+   <epic-config.max_parallel>` → the runnable wave, the FIFO merge queue, and any
+   halt reason (`--repo` names the epic's own home repo, already resolved in step 1
+   — never inferred from cwd, since the epic may be homed in a separate planning
+   repo from the checkout you are standing in). ALWAYS pass `--max-parallel` from
+   the resolved config — `schedule.py` defaults to 3 when the flag is omitted, so
+   a configured `max_parallel` of, say, 5 is silently ignored unless this flag
+   carries it through; `schedule.py`'s `runnable()` is the ONLY place the global
+   cap is enforced (see "Concurrency is capped twice" below).
 3. Dispatch one **drive subagent per wave member, in parallel**, if your harness
    supports subagents; otherwise drive the wave sequentially, in-session, in the
    wave order `schedule.py` returned (a child without a PR yet isn't in the merge
    queue, so the merge queue can't order this step). `--serial` forces the
-   sequential path.
+   sequential path. **Before each child's drive subagent starts** (or, in the
+   serial path, before driving it inline), set that child's Project Status =
+   **In Progress** — HARD, not optional: `schedule.py`'s `in_flight` count,
+   `runnable()`'s own-child exclusion, and `halt_reason()`'s live-work escape all
+   key off this Status value. Skipping it means a dispatched-but-not-yet-PR-opened
+   child looks identical to an untouched Todo child on the very next cycle, so it
+   gets dispatched a SECOND time — two drive subagents then race on the same
+   worktree/branch/PR, and the second one's preflight STOPs on `worktree-exists`.
 4. Marshal the merge queue: admit `merge_queue[0]` ONLY, run the merge phase for
    it — its requirement-resolution step (§3 "Ask GitHub what is unmet") re-derives
    what's unmet straight from `gh` and `mergeability.py` every time it runs, so a
@@ -451,7 +490,21 @@ is consumed downstream before any human sees it). Stateless — recover ALL
 state each wake from `gh` (epic-config, sub-issues, blockedBy, Project fields,
 PR map, `git worktree list`). On any resume, confirm each in-flight branch is
 fast-forwardable with a clean working tree before touching it; on divergence,
-rebase/reconcile within `CONFLICT_ATTEMPTS` — NEVER force-overwrite. **Never
+rebase/reconcile within `CONFLICT_ATTEMPTS` — NEVER force-overwrite. **A child
+Status = In Progress with no PR and an existing `git worktree list` entry for it
+is a resume candidate, not a permanent live-work signal**: `schedule.py`'s
+`runnable()` deliberately excludes it from the wave (it is what `in_flight`
+counts), so `run` does not re-dispatch it through the normal wave path — but
+if its worktree is confirmed idle (no drive step for it is active THIS cycle —
+whether that step ran as a subagent, if your harness supports them, or inline;
+otherwise the same idleness check applies to the single in-session driver), resume
+it directly rather than leaving it to sit forever behind `halt_reason()`'s
+live-work escape. Left
+unresumed indefinitely, an abandoned In-Progress child is a silent stall: the
+escape correctly keeps the epic from false-halting on it, but nothing ever
+drives it to completion either — treat a child in this state that has
+exceeded `CHILD_DRIVE_CEILING_S` since its Status last changed, with no active
+drive, as due for resume on the very next cycle. **Never
 STOP or park with `--auto` armed** — run `gh pr merge <pr> --disable-auto`
 first and record it.
 

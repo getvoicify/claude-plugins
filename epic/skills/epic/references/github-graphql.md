@@ -378,9 +378,9 @@ they compute — there is no single shared set:
 |---|---|---|
 | `pr_watch.py` | `headRefOid,statusCheckRollup,reviews,mergeStateStatus` | head-SHA change detection, check/review settlement polling |
 | `mergeability.py` | `mergeStateStatus,isDraft,statusCheckRollup,reviewDecision` | the unmet-requirement list (draft, behind/dirty, failing checks, missing approval) |
-| `schedule.py` | `createdAt` (one call per child with a mapped PR, inside `_populate_prs`) | `opened_at`, the FIFO merge-queue fallback timestamp for gate-free children |
+| `schedule.py` | `createdAt,reviews` (one call per child with a mapped PR, inside `_populate_prs`), plus `mergeability.py`'s own field set again via `mergeability._fetch` | `opened_at` (the FIFO merge-queue fallback for gate-free children) and the real `gates`/`gate_cleared_at` readiness `became_ready_at` sorts on — reusing `mergeability.requirements()` rather than re-deriving check/review/thread logic |
 
-None of the three requests GitHub's `mergeable` boolean — it races the
+None of the four requests GitHub's `mergeable` boolean — it races the
 mergeability computation, so the driver derives the same answer
 field-by-field from `mergeStateStatus` + `statusCheckRollup` +
 `reviewDecision` + thread state instead (see "sole gating authority" below).
@@ -390,8 +390,41 @@ Runnable examples:
 ```bash
 gh pr view <pr#> --repo <owner>/<repo> --json headRefOid,statusCheckRollup,reviews,mergeStateStatus
 gh pr view <pr#> --repo <owner>/<repo> --json mergeStateStatus,isDraft,statusCheckRollup,reviewDecision
-gh pr view <pr#> --repo <owner>/<repo> --json createdAt
+gh pr view <pr#> --repo <owner>/<repo> --json createdAt,reviews
 ```
+
+### `pr_watch.py --await` vocabulary
+
+The only valid `--await` keys are whatever `snapshot()` actually produces:
+`head`, `checks`, `threads_unresolved`, or a review-AUTHOR **login**
+(`coderabbitai`, `copilot-pull-request-reviewer`, or a human's GitHub
+username) — never a check name and never a bot's product name. In
+particular `claude-review` is a required STATUS CHECK, so it is folded into
+the `checks` key, not awaited under its own name; passing `--await
+checks,claude-review,coderabbit` (an earlier version of this reference's own
+example, also corrected in `docs/parallel-epic-design.md`'s D7) waits on two
+keys that can never appear in a snapshot, so the driver blocks the full
+deadline and parks falsely even though the real gates it meant to watch may
+already have settled.
+
+```bash
+python3 epic/scripts/pr_watch.py --repo <owner>/<repo> --pr <pr#> \
+  --await checks,coderabbitai --deadline 1800
+```
+
+**Known divergence from `mergeability.py` (documented, not fixed here):**
+`snapshot()["checks"]` aggregates EVERY entry in `statusCheckRollup`, while
+`mergeability.py`'s `requirements()` only gates on checks named in the live
+ruleset's `required_status_checks` (fail-closed to "all checks" only when
+that list is empty). A dangling NON-required check that never completes
+therefore keeps `pr_watch.py`'s `checks` key pending forever on a PR
+`mergeability.py` would already call clean. Fixing this properly means
+`snapshot()` accepting the same ruleset `mergeability.py` builds, which in
+turn means `pr_watch.py`'s `main()` fetching it once per invocation — a
+change that ripples through the module's existing polling/resilience test
+suite (which drives `main()` by monkeypatching `pr_watch._fetch` to return a
+`(pr, threads)` pair, not a ruleset-aware triple), so it is called out here
+as a known gap rather than folded into this pass.
 
 ### Ruleset source of truth — `gh api repos/<owner>/<repo>/rules/branches/main`
 
@@ -423,6 +456,7 @@ query($owner:String!,$name:String!,$epic:Int!){
       subIssues(first:100){
         nodes{
           number state
+          repository{ nameWithOwner }
           blockedBy(first:20){nodes{number}}
           projectItems(first:5){
             nodes{
@@ -447,6 +481,7 @@ query($owner:String!,$name:String!,$epic:Int!){
       subIssues(first:100){
         nodes{
           number state
+          repository{ nameWithOwner }
           blockedBy(first:20){nodes{number}}
           projectItems(first:5){
             nodes{
@@ -464,7 +499,11 @@ query($owner:String!,$name:String!,$epic:Int!){
 `schedule.py` separately re-runs the `pullRequests(first:100,
 orderBy:{field:UPDATED_AT, direction:DESC})` PR-mapping query documented
 above (see "PR-mapping rule") to attach each child's open/merged PR before
-computing the wave and the merge queue.
+computing the wave and the merge queue — ONCE PER DISTINCT repo among the
+`repository.nameWithOwner` values the query above returns, not once for the
+epic's own repo alone. A cross-repo epic's children are resolved against
+their OWN repo's open PRs this way (`status.py` mirrors the same per-repo
+PR-map fetch for the same reason).
 
 ### `mergeability.py` is the sole gating authority
 
