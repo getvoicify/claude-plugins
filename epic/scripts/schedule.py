@@ -8,6 +8,7 @@ import re
 import sys
 
 import gh
+import mergeability
 
 _PRIORITY_RANK = {"P0": 0, "P1": 1, "P2": 2}
 
@@ -119,6 +120,7 @@ query($owner:String!,$name:String!,$epic:Int!){
       subIssues(first:100){
         nodes{
           number state
+          repository{ nameWithOwner }
           blockedBy(first:20){nodes{number}}
           projectItems(first:5){
             nodes{
@@ -164,9 +166,16 @@ def _fetch_children(repo, epic):
         items = (node.get("projectItems") or {}).get("nodes")
         status = _project_field(items, "status")
         priority = _project_field(items, "priority")
+        # Children may live in a different repo than the epic (SKILL.md's
+        # "Checkout resolution (cross-repo children)"). Fall back to the
+        # epic's own repo when the query omits it (older fixtures/tests, or
+        # a schema that hasn't backfilled it) so single-repo epics are
+        # unaffected.
+        child_repo = ((node.get("repository") or {}).get("nameWithOwner")) or repo
         children.append({
             "number": node["number"],
             "state": node["state"],
+            "repo": child_repo,
             "position": position,
             "priority": priority,
             "blocked_by": [
@@ -191,10 +200,93 @@ def _fetch_pr_map(repo):
     return mapping
 
 
-def _populate_prs(repo, children, pr_map):
-    """Attach each child's PR, including `opened_at` from a dedicated `gh pr
-    view --json createdAt` call — the FIFO merge-queue fallback for
-    gate-free/absent-gate children depends on this field being present.
+def _fetch_pr_maps(repos):
+    """PR maps keyed by repo — one `_fetch_pr_map` call per DISTINCT child
+    repo, so a cross-repo epic's children each see PRs opened in their own
+    repo instead of only the epic's home repo (a child homed elsewhere would
+    otherwise never show a PR and re-enter the wave forever)."""
+    return {r: _fetch_pr_map(r) for r in sorted(set(repos))}
+
+
+_REQUIRED_CHECK_FAIL_PREFIXES = ("check-failing:", "check-missing:", "blocked-unexplained:")
+
+
+def _latest(stamps):
+    values = [s for s in stamps if s]
+    return max(values) if values else None
+
+
+def _compute_gates(pr_detail, ruleset, threads, reviews):
+    """Real prose-gate readiness, derived from the same signals
+    `mergeability.py` uses for its merge/no-merge requirement set — reused
+    directly via `mergeability.requirements()` rather than re-deriving the
+    check/review/thread logic here.
+
+    Folded to four named gates that map onto the requirement codes a drive
+    subagent actually resolves BEFORE merge-queue entry:
+      - "checks": required status checks (CI, and `claude-review` when it is
+        one of them — see D3/SKILL.md).
+      - "threads": unresolved review threads.
+      - "review": formal review decision (CHANGES_REQUESTED / REVIEW_REQUIRED),
+        aggregating every reviewer (human or bot — CodeRabbit, Copilot,
+        Claude Review all submit formal reviews that fold into GitHub's own
+        `reviewDecision`).
+      - "draft": PR still marked draft.
+    Structural, merge-phase-only concerns (`behind-base`, `conflict`) are
+    deliberately excluded — those are resolved once, at merge-queue head-of-
+    line admission, not while a child is still being driven in parallel.
+
+    Returns (gates, gate_cleared_at). A gate absent from `gate_cleared_at`
+    contributes no timestamp — `became_ready_at()` only needs ONE real stamp
+    among all clean gates to skip the `opened_at` fallback.
+    """
+    reqs = mergeability.requirements(pr_detail, ruleset, threads)
+    codes = {r["code"] for r in reqs}
+
+    def has(prefix):
+        return any(c.startswith(prefix) for c in codes)
+
+    gates, cleared = {}, {}
+
+    if has("check-pending:"):
+        gates["checks"] = "pending"
+    elif any(has(p) for p in _REQUIRED_CHECK_FAIL_PREFIXES):
+        gates["checks"] = "red"
+    else:
+        gates["checks"] = "clean"
+        stamp = _latest(c.get("completedAt") for c in pr_detail.get("statusCheckRollup") or [])
+        if stamp:
+            cleared["checks"] = stamp
+
+    gates["threads"] = "pending" if has("thread-unresolved:") else "clean"
+
+    if "changes-requested" in codes:
+        gates["review"] = "red"
+    elif "approval-missing" in codes:
+        gates["review"] = "pending"
+    else:
+        gates["review"] = "clean"
+        stamp = _latest(
+            r.get("submittedAt") for r in reviews or [] if r.get("state") != "COMMENTED"
+        )
+        if stamp:
+            cleared["review"] = stamp
+
+    gates["draft"] = "red" if pr_detail.get("isDraft") else "clean"
+
+    return gates, cleared
+
+
+def _populate_prs(children, pr_maps):
+    """Attach each child's PR, including its real gate readiness (`gates` +
+    `gate_cleared_at`, computed via `mergeability.requirements()` on the
+    child's OWN repo) and `opened_at` from a dedicated `gh pr view --json
+    createdAt` call — the FIFO merge-queue fallback for gate-free/absent-gate
+    children depends on this field being present.
+
+    Gate/ruleset/thread lookups only run for an OPEN pr — `became_ready_at()`
+    never considers a non-OPEN PR, so fetching them for closed/merged PRs
+    would be pure waste.
 
     A failed lookup is NOT swallowed into a silently-None opened_at (that
     would re-strand the child from the merge queue, the exact bug this
@@ -202,27 +294,34 @@ def _populate_prs(repo, children, pr_map):
     instead, which exits 2 with the standard error shape.
     """
     for child in children:
-        pr = pr_map.get(child["number"])
+        repo = child["repo"]
+        pr = (pr_maps.get(repo) or {}).get(child["number"])
         if not pr:
             continue
-        view = gh.run_json(
-            ["pr", "view", str(pr["number"]), "--repo", repo, "--json", "createdAt"]
+        extra = gh.run_json(
+            ["pr", "view", str(pr["number"]), "--repo", repo, "--json", "createdAt,reviews"]
         )
+        gates, cleared = {}, {}
+        if pr["state"] == "OPEN":
+            pr_detail, ruleset, threads = mergeability._fetch(repo, pr["number"])
+            gates, cleared = _compute_gates(pr_detail, ruleset, threads, extra.get("reviews"))
         child["pr"] = {
             "state": pr["state"],
-            "gates": {},
-            "gate_cleared_at": {},
-            "opened_at": view.get("createdAt"),
+            "gates": gates,
+            "gate_cleared_at": cleared,
+            "opened_at": extra.get("createdAt"),
         }
 
 
-def _fetch_parks(repo, children):
-    """Machine-readable `epic-park:` trailers on every parked child's issue."""
+def _fetch_parks(children):
+    """Machine-readable `epic-park:` trailers on every parked child's issue,
+    read from the CHILD's own repo (cross-repo children may be parked in a
+    repo other than the epic's home repo)."""
     parks = []
     for child in children:
         if not child.get("parked"):
             continue
-        data = gh.run_json(["issue", "view", str(child["number"]), "--repo", repo,
+        data = gh.run_json(["issue", "view", str(child["number"]), "--repo", child["repo"],
                              "--json", "comments"])
         for comment in reversed(data.get("comments") or []):
             body = comment.get("body") or ""
@@ -254,9 +353,9 @@ def main(argv=None):
 
     try:
         children = _fetch_children(args.repo, args.epic)
-        pr_map = _fetch_pr_map(args.repo)
-        _populate_prs(args.repo, children, pr_map)
-        parks = _fetch_parks(args.repo, children)
+        pr_maps = _fetch_pr_maps(c["repo"] for c in children)
+        _populate_prs(children, pr_maps)
+        parks = _fetch_parks(children)
     except gh.GhError as err:
         message = err.stderr or str(err)
         print(json.dumps({"error": message}))

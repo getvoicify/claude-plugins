@@ -56,6 +56,7 @@ query($owner:String!,$name:String!,$epic:Int!){
       subIssues(first:100){
         nodes{
           number state
+          repository{ nameWithOwner }
           projectItems(first:5){
             nodes{ status: fieldValueByName(name:"Status"){... on ProjectV2ItemFieldSingleSelectValue{name}} }
           }
@@ -96,6 +97,14 @@ def _fetch_pr_map(repo):
     return mapping
 
 
+def _fetch_pr_maps(repos):
+    """PR maps keyed by repo — one `_fetch_pr_map` call per DISTINCT child
+    repo, mirroring `schedule.py`. A child homed in a repo other than the
+    epic's own would otherwise never show a PR here either, re-entering the
+    wave forever from `status`'s point of view too."""
+    return {r: _fetch_pr_map(r) for r in sorted(set(repos))}
+
+
 def _fetch(repo, epic):
     owner, name = repo.split("/")
     data = gh.graphql(_ISSUE_QUERY, owner=owner, name=name, epic=epic)
@@ -104,15 +113,20 @@ def _fetch(repo, epic):
 
     children = []
     for node in issue["subIssues"]["nodes"]:
+        # Children may live in a different repo than the epic. Fall back to
+        # the epic's own repo when the query omits it (older fixtures/tests)
+        # so single-repo epics are unaffected.
+        child_repo = ((node.get("repository") or {}).get("nameWithOwner")) or repo
         children.append({
             "number": node["number"],
             "state": node["state"],
+            "repo": child_repo,
             "status": _project_status(node.get("projectItems")),
         })
 
-    pr_map = _fetch_pr_map(repo)
+    pr_maps = _fetch_pr_maps(c["repo"] for c in children)
     for child in children:
-        pr = pr_map.get(child["number"])
+        pr = (pr_maps.get(child["repo"]) or {}).get(child["number"])
         if pr:
             child["pr"] = {"state": pr["state"]}
             child["branch"] = pr.get("headRefName")
