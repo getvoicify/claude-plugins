@@ -15,8 +15,8 @@ WATCH_MULT = 1.8
 WATCH_CEIL_S = 900
 _JITTER = 0.2
 
-_RETRY_AFTER_RE = re.compile(r"retry[- ]after:?\s*(\d+)", re.I)
-_RATELIMIT_RESET_RE = re.compile(r"x-ratelimit-reset:?\s*(\d+)", re.I)
+_RETRY_AFTER_RE = re.compile(r"retry[- ]after:\s*(\d{1,10})", re.I)
+_RATELIMIT_RESET_RE = re.compile(r"x-ratelimit-reset:\s*(\d{1,10})", re.I)
 
 
 def backoff_delay(step, jitter=0.0):
@@ -36,21 +36,32 @@ def backoff_delay(step, jitter=0.0):
     return max(1, round(base * (1 + _JITTER * jitter)))
 
 
-def error_backoff(errors, stderr, now_epoch=None):
+def error_backoff(errors, stderr, now_epoch=None, jitter=0.0):
     """Seconds to wait after a failed `gh` call.
 
     GitHub's own guidance wins when it gives any: an explicit `Retry-After`,
     then an `x-ratelimit-reset` epoch. Otherwise fall back to the same
     exponential ladder as a quiet tick.
+
+    `jitter` is supplied by the caller (in [-1.0, 1.0]). For the ladder,
+    it is passed through symmetrically. For GitHub-directed waits (Retry-After
+    and x-ratelimit-reset), only positive jitter is applied to avoid retrying
+    earlier than GitHub requested — map [-1, 1] to [0, +_JITTER] using max(0, jitter).
     """
     text = stderr or ""
     match = _RETRY_AFTER_RE.search(text)
     if match:
-        return max(1, min(int(match.group(1)), WATCH_CEIL_S))
+        base = min(int(match.group(1)), WATCH_CEIL_S)
+        # Positive-only jitter: apply max(0, jitter) to spread herd above GitHub's floor
+        return max(1, round(base * (1 + _JITTER * max(0, jitter))))
     match = _RATELIMIT_RESET_RE.search(text)
     if match and now_epoch is not None:
-        return max(1, min(int(match.group(1)) - int(now_epoch), WATCH_CEIL_S))
-    return backoff_delay(errors)
+        base = min(int(match.group(1)) - int(now_epoch), WATCH_CEIL_S)
+        if base >= 1:
+            # Positive-only jitter: apply max(0, jitter) to spread herd above GitHub's floor
+            return max(1, round(base * (1 + _JITTER * max(0, jitter))))
+        return 1
+    return backoff_delay(errors, jitter)
 
 
 def snapshot(pr, threads):

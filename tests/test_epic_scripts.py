@@ -2865,3 +2865,42 @@ def test_error_backoff_falls_back_to_the_exponential_ladder():
 def test_error_backoff_tolerates_empty_stderr():
     assert error_backoff(2, "") == backoff_delay(2)
     assert error_backoff(2, None) == backoff_delay(2)
+
+
+def test_jitter_applied_to_still_growing_value():
+    """Jitter applies to exponential values before they hit ceiling."""
+    # Step 3 gives 87s (before jitter), not yet clamped; jitter should spread it.
+    assert backoff_delay(3, -1.0) == 70
+    assert backoff_delay(3, 1.0) == 105
+    assert backoff_delay(3, 0.0) == 87
+
+
+def test_error_backoff_retry_after_takes_precedence():
+    """Retry-After wins over x-ratelimit-reset when both present."""
+    stderr = "x-ratelimit-reset: 1000300\nRetry-After: 47"
+    assert error_backoff(1, stderr, now_epoch=1000000) == 47
+
+
+def test_error_backoff_jittered_ladder_fallback_is_symmetric():
+    """Ladder fallback applies symmetric jitter, same as backoff_delay."""
+    assert error_backoff(3, "HTTP 502", jitter=-1.0) == backoff_delay(3, -1.0)
+    assert error_backoff(3, "HTTP 502", jitter=1.0) == backoff_delay(3, 1.0)
+    assert error_backoff(3, "HTTP 502", jitter=0.0) == backoff_delay(3, 0.0)
+
+
+def test_error_backoff_retry_after_jitter_is_positive_only():
+    """Retry-After never waits less than GitHub asked; jitter spreads above."""
+    # 47 seconds, jittered by ±20% but only positive: [47, 47*1.2] = [47, 56.4]
+    base = 47
+    assert error_backoff(1, "Retry-After: 47", jitter=-1.0) == base  # 47 * (1 + 0.2 * abs(-1.0)) but min is base
+    assert error_backoff(1, "Retry-After: 47", jitter=1.0) == round(base * (1 + 0.2))  # 56
+    assert error_backoff(1, "Retry-After: 47", jitter=0.0) == base
+
+
+def test_error_backoff_ratelimit_reset_jitter_is_positive_only():
+    """x-ratelimit-reset never waits less than GitHub said; jitter spreads above."""
+    # Epoch diff is 300s, jittered by ±20% but only positive: [300, 300*1.2] = [300, 360]
+    stderr = "x-ratelimit-reset: 1000300"
+    assert error_backoff(1, stderr, now_epoch=1000000, jitter=-1.0) == 300
+    assert error_backoff(1, stderr, now_epoch=1000000, jitter=1.0) == 360
+    assert error_backoff(1, stderr, now_epoch=1000000, jitter=0.0) == 300
