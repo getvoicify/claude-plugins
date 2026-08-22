@@ -318,9 +318,11 @@ treated as a PIN FAULT until proven otherwise:
    supports structured questions; otherwise as numbered plain-text questions,
    waiting for the reply); `run`: park.
 
-The only hard ceilings are resources: `CHILD_DRIVE_CEILING_S` (7200) from drive
-start to merge-queue entry, and `PR_WATCH_DEADLINE_S` (3600) per wait. Time spent
-waiting at the head of the merge queue is NOT charged to the child.
+The only hard ceiling is a resource: `CHILD_DRIVE_CEILING_S` (7200) from drive
+start to merge-queue entry. CI/CodeRabbit/Copilot waits carry no deadline of
+their own — `pr_watch.py` ticks indefinitely and a long silence is reported,
+never parked. Time spent waiting at the head of the merge queue is NOT charged
+to the child.
 
 ### 3. Merge phase (default) — or stop
 
@@ -352,14 +354,14 @@ in the merge phase — width-1 is what lets each PR rebase exactly once, onto th
      than a CI cycle completes → park with exactly that diagnosis.
    - `check-failing:<name>` → diagnose from the run, dispatch the implementer if
      your harness supports subagents (otherwise make the fix inline), push.
-   - `check-pending:<name>` → wait via `pr_watch.py --await <keys>`, never a fixed
-     sleep. The ONLY valid `<keys>` are `pr_watch.py`'s own snapshot keys — `checks`,
-     `threads_unresolved`, `head`, or a review-author LOGIN (e.g. `coderabbitai`,
-     `copilot-pull-request-reviewer`) — never a check name like `claude-review`
-     (that folds into `checks`) and never a bot's product name spelled as its own
-     key. See `references/github-graphql.md`'s "`pr_watch.py --await` vocabulary"
-     section for the full list and a documented divergence (`checks` currently
-     aggregates every check in the rollup, not only the ruleset's required ones).
+   - `check-pending:<name>` → arm the watch and YIELD, never sleep and never
+     block: `python epic/scripts/pr_watch.py --repo <owner/name> --pr <n>
+     --reset-backoff`. It returns immediately with either
+     `{"event":"activity",...}` (exit 0 — re-run `mergeability.py` and act) or
+     `{"event":"waiting","next_tick_in_s":N}` (exit 1 — schedule the next tick
+     at N seconds, clamped to your scheduler's range). There is no key to
+     select and no deadline to set: the watch reports ANY PR activity and
+     `mergeability.py` stays the sole authority on what is actionable.
    - `check-missing:<name>` → a required check never started; diagnose why
      (workflow trigger misconfigured? branch protection stale?) rather than
      waiting forever — if it still hasn't started, park with a diagnostic naming
@@ -445,8 +447,10 @@ An orchestrator loop. Each cycle:
    what's unmet straight from `gh` and `mergeability.py` every time it runs, so a
    child resumed mid-merge on a later wake needs no separate resume path, it just
    re-enters that step where GitHub's live state says it is — then recompute.
-5. Reschedule (via `ScheduleWakeup` if your harness supports scheduled wakeups;
-   otherwise keep an in-session loop). No eligible unparked child left and the
+5. Reschedule. The wake delay is the MINIMUM `next_tick_in_s` across all live
+   watches, clamped to your scheduler's range (`ScheduleWakeup` has a 60s
+   floor, so early ticks clamp up; an in-session loop honours them as-is).
+   One scheduler for the whole epic, never one per child. No eligible unparked child left and the
    epic complete (every sub-issue `state == CLOSED`, none parked-open, and the
    sub-issue list is non-empty — an EMPTY children fetch is NEVER completion; treat
    it as a recovery failure and STOP to diagnose, since `epic_complete([])` is
@@ -467,10 +471,19 @@ order `schedule.py` returned (`--serial` forces this path even when subagents
 are available): worktree → context → pin → implement → `pre-review` gates → pre-PR
 reviews → PR-open → Status = In Review → prose-gate resolution, ending when every
 prose gate is clean. It NEVER rebases for merge, NEVER arms `--auto`, NEVER
-merges, and never touches another child's worktree or branch. Prose-gate
-resolution stays inside the parallel region deliberately: bot-review latency
-(CI, CodeRabbit, Copilot, Claude Review) is the largest single cost in a child's
-lifecycle, and serializing it would surrender most of the parallel win.
+merges, and never touches another child's worktree or branch.
+
+**Prose-gate resolution yields rather than waits.** Bot-review latency (CI,
+CodeRabbit, Copilot, Claude Review) is the largest single cost in a child's
+lifecycle, but a drive subagent cannot survive a scheduled wake if your
+harness supports subagents — so a subagent that has nothing left to do but
+wait arms the watch and RETURNS with a `waiting` outcome naming the PR and its
+`next_tick_in_s`; otherwise the same step, run inline, arms the watch and
+returns control to the run loop the same way. The run loop owns every tick and
+re-drives the child — via a fresh subagent or by re-entering the inline step —
+when activity fires. The child is left at Status = In Review with an open PR,
+which is exactly the state the run loop re-derives from `gh` on the next wake.
+Nothing sits idle, and a killed session loses at most one cursor.
 
 **Concurrency is capped twice**: globally by `epic-config.max_parallel`
 (`MAX_PARALLEL`, default 3) across all involved repos — enforced by
@@ -509,13 +522,18 @@ STOP or park with `--auto` armed** — run `gh pr merge <pr> --disable-auto`
 first and record it.
 
 Tunables (do not exceed): `MAX_PARALLEL=3`, `STALL_ROUNDS=2`, `REPIN_ATTEMPTS=1`,
-`PR_WATCH_DEADLINE_S=3600`, `CHILD_DRIVE_CEILING_S=7200`, `CONFLICT_ATTEMPTS=2`,
-`PARK_SIGNATURE_THRESHOLD=3`. `STALL_ROUNDS` names the convergence contract's
-two-consecutive-`no_progress` threshold; the rest are shared with the per-child
-mechanics described above. CI/CodeRabbit/Copilot waits are bounded by
-`PR_WATCH_DEADLINE_S` via `pr_watch.py`, never a fixed sleep count — a wait that
-outlives its deadline parks the child with a precise diagnostic naming the
-check/reviewer that never posted, rather than rescheduling forever.
+`WATCH_FLOOR_S=15`, `WATCH_MULT=1.8`, `WATCH_CEIL_S=900`,
+`CHILD_DRIVE_CEILING_S=7200`, `CONFLICT_ATTEMPTS=2`, `PARK_SIGNATURE_THRESHOLD=3`.
+`STALL_ROUNDS` names the convergence contract's two-consecutive-`no_progress`
+threshold; `WATCH_FLOOR_S`/`WATCH_MULT`/`WATCH_CEIL_S` are `pr_watch.py`'s own
+jittered-exponential-backoff parameters (floor, multiplier, ceiling) for the
+delay it requests between ticks; the rest are shared with the per-child
+mechanics described above.
+
+CI/CodeRabbit/Copilot waits are never bounded by a deadline. A watch ends only
+when the PR stops being OPEN, when `pr_watch.py --stop` is run, or when the run
+terminates. A long silence is REPORTED by `status.py` (`watches[]`: child, PR,
+`quiet_s`, and the facet that last moved) and is never a reason to park.
 
 **Circuit breakers:**
 - Convergence stall after re-pin / gate unfixable / a resource ceiling exceeded /
@@ -528,7 +546,7 @@ check/reviewer that never posted, rather than rescheduling forever.
   park never stalls the wave, and the merge queue keeps draining around it.
 - **Armed-but-refusing**: the head-of-queue PR has `--auto` armed and
   `mergeability.py` reports an EMPTY requirement set, yet the PR still has not
-  merged within `PR_WATCH_DEADLINE_S` measured from the PR's own
+  merged within one hour (3600s) measured from the PR's own
   `autoMergeRequest.enabledAt` (as reported by `gh`, not from when this cycle
   happened to notice it) — GitHub is refusing a merge that
   nothing in the visible requirement set explains (an org-level ruleset, a

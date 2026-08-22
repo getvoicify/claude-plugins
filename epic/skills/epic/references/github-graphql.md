@@ -393,38 +393,47 @@ gh pr view <pr#> --repo <owner>/<repo> --json mergeStateStatus,isDraft,statusChe
 gh pr view <pr#> --repo <owner>/<repo> --json createdAt,reviews
 ```
 
-### `pr_watch.py --await` vocabulary
+### Waiting is a tick, never a sleep — `pr_watch.py`
 
-The only valid `--await` keys are whatever `snapshot()` actually produces:
-`head`, `checks`, `threads_unresolved`, or a review-AUTHOR **login**
-(`coderabbitai`, `copilot-pull-request-reviewer`, or a human's GitHub
-username) — never a check name and never a bot's product name. In
-particular `claude-review` is a required STATUS CHECK, so it is folded into
-the `checks` key, not awaited under its own name; passing `--await
-checks,claude-review,coderabbit` (an earlier version of this reference's own
-example, also corrected in `docs/parallel-epic-design.md`'s D7) waits on two
-keys that can never appear in a snapshot, so the driver blocks the full
-deadline and parks falsely even though the real gates it meant to watch may
-already have settled.
+`pr_watch.py` takes no key to select and sets no deadline. One invocation is
+one tick: it loads a cursor, fetches the PR once, and exits.
 
 ```bash
-python3 epic/scripts/pr_watch.py --repo <owner>/<repo> --pr <pr#> \
-  --await checks,coderabbitai --deadline 1800
+python3 epic/scripts/pr_watch.py --repo <owner>/<repo> --pr <pr#> --reset-backoff
 ```
 
-**Known divergence from `mergeability.py` (documented, not fixed here):**
-`snapshot()["checks"]` aggregates EVERY entry in `statusCheckRollup`, while
-`mergeability.py`'s `requirements()` only gates on checks named in the live
-ruleset's `required_status_checks` (fail-closed to "all checks" only when
-that list is empty). A dangling NON-required check that never completes
-therefore keeps `pr_watch.py`'s `checks` key pending forever on a PR
-`mergeability.py` would already call clean. Fixing this properly means
-`snapshot()` accepting the same ruleset `mergeability.py` builds, which in
-turn means `pr_watch.py`'s `main()` fetching it once per invocation — a
-change that ripples through the module's existing polling/resilience test
-suite (which drives `main()` by monkeypatching `pr_watch._fetch` to return a
-`(pr, threads)` pair, not a ruleset-aware triple), so it is called out here
-as a known gap rather than folded into this pass.
+| Exit | Event | What the driver does |
+|---|---|---|
+| `0` | `{"event":"activity","changed":["reviews"],"head":…}` | Re-run `mergeability.py`, act on what is unmet |
+| `0` | `{"event":"pr-closed","state":"MERGED"}` | Stop watching |
+| `1` | `{"event":"waiting","next_tick_in_s":283,"quiet_s":1240}` (quiet tick; the very first tick also carries `"armed":true`) | Schedule the next tick |
+| `1` | `{"event":"waiting","next_tick_in_s":283,"reason":"gh-error","consecutive_errors":3}` (a failed `gh` call; note there is no `quiet_s` key on this shape — a driver that reads it unconditionally will `KeyError`) | Schedule the next tick |
+| `2` | `{"event":"error","detail":…,"consecutive":8}` | Sustained `gh` outage — diagnose |
+| `0` (via `--stop`) | `{"event":"stopped","cursor_removed":true\|false}` | Watch ended; cursor removed if one existed |
+
+`changed` names the facets that moved: `head`, `checks`, `reviews`, `threads`,
+`comments`. Every review counts, `COMMENTED` included — that is what makes a
+CodeRabbit or Copilot review visible, since neither submits a formal verdict.
+
+`next_tick_in_s` is a REQUEST, not a command: clamp it to your scheduler's
+range. The backoff runs `WATCH_FLOOR_S` (15) upward by `WATCH_MULT` (1.8) each
+quiet tick — 15 → 27 → 49 → 87 → 157 → 283 → 510 → `WATCH_CEIL_S` (900) — and is
+jittered ±20% so parallel wave members desynchronise. It returns to the floor
+only on a real head change; `--reset-backoff` forces the floor after a push,
+`--resume-backoff` asserts the default of continuing from the stored step. On
+a failed `gh` call the same ladder backs off the retry, honouring an explicit
+`Retry-After` or `x-ratelimit-reset` value parsed out of `gh`'s stderr when one
+is present — `gh` usually prints prose rather than raw headers, so treat this
+as best-effort, not a proven rate-limit integration.
+
+The cursor lives in `$EPIC_WATCH_DIR` (default `~/.cache/epic/watch`) and is
+disposable — losing it costs one wasted fast-tier poll. `--stop` deletes it and
+ends the watch.
+
+Because the script no longer judges gates, the old divergence between its
+`checks` key and the ruleset's required checks is gone: `mergeability.py` is
+the sole authority on what is required, and `pr_watch.py` only reports that
+something moved.
 
 ### Ruleset source of truth — `gh api repos/<owner>/<repo>/rules/branches/main`
 
