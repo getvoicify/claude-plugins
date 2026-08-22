@@ -3,10 +3,12 @@ functions below do no I/O; `main()` is the thin impure shell and is
 read-only — it never mutates anything (`--sweep` execution belongs to the
 driver, not this script)."""
 import argparse
+import datetime
 import json
 import sys
 
 import gh
+import watch_state
 
 
 def epic_complete(children):
@@ -43,6 +45,44 @@ def sweep_plan(children):
         for c in sorted(children or [], key=lambda c: c["number"])
         if (c.get("pr") or {}).get("state") == "MERGED" and c.get("branch")
     ]
+
+
+def watch_report(children, cursors, now_iso):
+    """Live PR watches and how long each has been quiet.
+
+    A long silence is reported here and NEVER parked — the run stays alive
+    while an operator gets told which gate has gone quiet and for how long.
+    """
+    out = []
+    for child in sorted(children or [], key=lambda c: c["number"]):
+        pr = child.get("pr") or {}
+        if pr.get("state") != "OPEN":
+            continue
+        cursor = (cursors or {}).get(child["number"])
+        if not cursor or not cursor.get("last_activity_at"):
+            continue
+        out.append({
+            "child": child["number"],
+            "pr": pr.get("number"),
+            "quiet_s": watch_state.elapsed_s(cursor["last_activity_at"], now_iso),
+            "last_activity": list(cursor.get("last_changed") or []),
+        })
+    return out
+
+
+def _now():
+    """ISO-8601 UTC stamp. A monkeypatch point for the tests."""
+    return datetime.datetime.now(datetime.timezone.utc).isoformat()
+
+
+def _load_cursors(children):
+    """Watch cursors for every child with an open PR, keyed by child number."""
+    cursors = {}
+    for child in children or []:
+        pr = child.get("pr") or {}
+        if pr.get("state") == "OPEN" and pr.get("number"):
+            cursors[child["number"]] = watch_state.load(child["repo"], pr["number"])
+    return cursors
 
 
 _ISSUE_QUERY = """
@@ -128,7 +168,7 @@ def _fetch(repo, epic):
     for child in children:
         pr = (pr_maps.get(child["repo"]) or {}).get(child["number"])
         if pr:
-            child["pr"] = {"state": pr["state"]}
+            child["pr"] = {"state": pr["state"], "number": pr["number"]}
             child["branch"] = pr.get("headRefName")
         else:
             child["pr"] = None
@@ -157,6 +197,7 @@ def main(argv=None):
         "complete": epic_complete(children),
         "drift": drift(children, epic),
         "sweep_plan": sweep_plan(children) if args.sweep_plan else [],
+        "watches": watch_report(children, _load_cursors(children), _now()),
     }
     print(json.dumps(result))
     return 0

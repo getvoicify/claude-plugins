@@ -2734,3 +2734,77 @@ def test_reset_backoff_persists_across_a_failed_fetch(tmp_path, monkeypatch, cap
     _pw.main(args + ["--reset-backoff"])
     capsys.readouterr()
     assert watch_state.load("o/n", 7, str(tmp_path))["step"] == 0
+
+
+# --- status.py: which watches have gone quiet -----------------------------
+# A long silence is REPORTED, never parked. This is the replacement for the
+# deadline-to-park circuit breaker: the run stays alive and the operator
+# gets told which gate has gone quiet and for how long.
+
+from status import watch_report
+
+_NOW = "2026-08-22T11:00:00+00:00"
+
+
+def test_watch_report_names_the_pr_and_how_long_it_has_been_quiet():
+    children = [{"number": 12, "pr": {"state": "OPEN", "number": 34}}]
+    cursors = {12: {"last_activity_at": "2026-08-22T10:13:00+00:00",
+                    "last_changed": ["checks"]}}
+    assert watch_report(children, cursors, _NOW) == [
+        {"child": 12, "pr": 34, "quiet_s": 2820, "last_activity": ["checks"]}
+    ]
+
+
+def test_watch_report_skips_children_without_an_open_pr():
+    children = [
+        {"number": 1, "pr": None},
+        {"number": 2, "pr": {"state": "MERGED", "number": 20}},
+    ]
+    cursors = {1: {"last_activity_at": _NOW, "last_changed": []},
+               2: {"last_activity_at": _NOW, "last_changed": []}}
+    assert watch_report(children, cursors, _NOW) == []
+
+
+def test_watch_report_skips_children_with_no_cursor():
+    children = [{"number": 12, "pr": {"state": "OPEN", "number": 34}}]
+    assert watch_report(children, {}, _NOW) == []
+
+
+def test_watch_report_skips_a_cursor_that_never_recorded_activity():
+    children = [{"number": 12, "pr": {"state": "OPEN", "number": 34}}]
+    cursors = {12: {"last_activity_at": None, "last_changed": []}}
+    assert watch_report(children, cursors, _NOW) == []
+
+
+def test_watch_report_is_ordered_by_child_number():
+    children = [
+        {"number": 9, "pr": {"state": "OPEN", "number": 90}},
+        {"number": 3, "pr": {"state": "OPEN", "number": 30}},
+    ]
+    cursors = {
+        9: {"last_activity_at": _NOW, "last_changed": []},
+        3: {"last_activity_at": _NOW, "last_changed": []},
+    }
+    assert [w["child"] for w in watch_report(children, cursors, _NOW)] == [3, 9]
+
+
+def test_status_cli_includes_the_watch_report(tmp_path, monkeypatch, capsys):
+    import status
+
+    children = [{"number": 12, "state": "OPEN", "repo": "o/n", "status": "In Review",
+                 "pr": {"state": "OPEN", "number": 34}, "branch": "feat/12"}]
+    monkeypatch.setattr(status, "_fetch",
+                        lambda repo, epic: (children, {"state": "OPEN", "status": None}))
+    monkeypatch.setattr(status, "_now", lambda: _NOW)
+    monkeypatch.setenv("EPIC_WATCH_DIR", str(tmp_path))
+    watch_state.save("o/n", 34, {
+        "fingerprint": {"head": "a"}, "step": 4, "errors": 0,
+        "last_activity_at": "2026-08-22T10:13:00+00:00", "last_changed": ["checks"],
+    }, str(tmp_path))
+
+    code = status.main(["--epic", "1", "--repo", "o/n"])
+    payload = json.loads(capsys.readouterr().out)
+    assert code == 0
+    assert payload["watches"] == [
+        {"child": 12, "pr": 34, "quiet_s": 2820, "last_activity": ["checks"]}
+    ]
