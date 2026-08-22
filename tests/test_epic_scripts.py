@@ -2510,3 +2510,101 @@ def test_no_halt_while_a_child_is_in_flight_with_open_pr_still_passes():
     # after widening the condition to an OR.
     kids = [child(3, 0, pr={"number": 101, "state": "OPEN"})]
     assert halt_reason(kids, [], 3) is None
+
+
+# --- watch_state.py: the watch cursor -------------------------------------
+# The cursor is a pure optimisation: losing it costs one wasted fast-tier
+# poll and nothing else. Every "bad file" path below must therefore fall
+# back to DEFAULT_CURSOR rather than raise, or a corrupt cursor would take
+# down a live epic run.
+
+import watch_state
+
+
+def test_cursor_path_is_namespaced_by_repo_and_pr(tmp_path):
+    path = watch_state.cursor_path("getvoicify/claude-plugins", 12, str(tmp_path))
+    assert path == tmp_path / "getvoicify__claude-plugins__12.json"
+
+
+def test_load_returns_defaults_when_no_cursor_exists(tmp_path):
+    assert watch_state.load("o/n", 1, str(tmp_path)) == watch_state.DEFAULT_CURSOR
+
+
+def test_load_returns_a_copy_not_the_shared_default(tmp_path):
+    """Mutating one load must not poison the next one."""
+    first = watch_state.load("o/n", 1, str(tmp_path))
+    first["step"] = 99
+    assert watch_state.load("o/n", 1, str(tmp_path))["step"] == 0
+
+
+def test_save_then_load_round_trips(tmp_path):
+    cursor = {
+        "fingerprint": {"head": "abc", "checks": "d1"},
+        "step": 3,
+        "errors": 0,
+        "last_activity_at": "2026-08-22T10:00:00+00:00",
+        "last_changed": ["checks"],
+    }
+    watch_state.save("o/n", 7, cursor, str(tmp_path))
+    assert watch_state.load("o/n", 7, str(tmp_path)) == cursor
+
+
+def test_save_creates_missing_parent_directories(tmp_path):
+    nested = tmp_path / "deep" / "deeper"
+    watch_state.save("o/n", 7, dict(watch_state.DEFAULT_CURSOR), str(nested))
+    assert (nested / "o__n__7.json").exists()
+
+
+def test_load_falls_back_to_defaults_on_corrupt_json(tmp_path):
+    (tmp_path / "o__n__7.json").write_text("{not json at all")
+    assert watch_state.load("o/n", 7, str(tmp_path)) == watch_state.DEFAULT_CURSOR
+
+
+def test_load_falls_back_to_defaults_when_file_is_not_a_mapping(tmp_path):
+    (tmp_path / "o__n__7.json").write_text('["a", "list"]')
+    assert watch_state.load("o/n", 7, str(tmp_path)) == watch_state.DEFAULT_CURSOR
+
+
+def test_load_drops_unknown_keys_and_fills_missing_ones(tmp_path):
+    (tmp_path / "o__n__7.json").write_text('{"step": 4, "bogus": true}')
+    loaded = watch_state.load("o/n", 7, str(tmp_path))
+    assert loaded["step"] == 4
+    assert loaded["fingerprint"] is None
+    assert "bogus" not in loaded
+
+
+def test_clear_removes_the_cursor_and_reports_it(tmp_path):
+    watch_state.save("o/n", 7, dict(watch_state.DEFAULT_CURSOR), str(tmp_path))
+    assert watch_state.clear("o/n", 7, str(tmp_path)) is True
+    assert not (tmp_path / "o__n__7.json").exists()
+
+
+def test_clear_is_a_noop_when_no_cursor_exists(tmp_path):
+    assert watch_state.clear("o/n", 7, str(tmp_path)) is False
+
+
+def test_state_dir_honours_the_env_override(tmp_path, monkeypatch):
+    monkeypatch.setenv("EPIC_WATCH_DIR", str(tmp_path / "from-env"))
+    assert watch_state.cursor_path("o/n", 1).parent == tmp_path / "from-env"
+
+
+def test_explicit_override_beats_the_env_var(tmp_path, monkeypatch):
+    monkeypatch.setenv("EPIC_WATCH_DIR", str(tmp_path / "from-env"))
+    path = watch_state.cursor_path("o/n", 1, str(tmp_path / "explicit"))
+    assert path.parent == tmp_path / "explicit"
+
+
+def test_elapsed_s_measures_the_gap_between_two_iso_stamps():
+    assert watch_state.elapsed_s(
+        "2026-08-22T10:00:00+00:00", "2026-08-22T10:47:00+00:00"
+    ) == 2820
+
+
+def test_elapsed_s_accepts_githubs_trailing_z():
+    assert watch_state.elapsed_s(
+        "2026-08-22T10:00:00Z", "2026-08-22T10:00:30Z"
+    ) == 30
+
+
+def test_elapsed_s_returns_zero_when_there_is_no_prior_stamp():
+    assert watch_state.elapsed_s(None, "2026-08-22T10:00:00Z") == 0
