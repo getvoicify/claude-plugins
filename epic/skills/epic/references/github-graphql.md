@@ -362,12 +362,15 @@ query($owner:String!,$name:String!,$pr:Int!){
 }'
 ```
 
-`pr_watch.py` uses `isResolved` to compute the `threads_unresolved` count it
-polls on; `mergeability.py` uses the same field to emit a
-`thread-unresolved:<id>` requirement per unresolved thread. Neither script's
-Python currently reads `isOutdated` or `path` — they travel in the response
-for downstream use (thread routing, stale-thread detection) but are not yet
-consumed by either script.
+`pr_watch.py` uses `id` and `isResolved` together to build its `threads`
+facet — an order-independent digest over every thread's `(id, isResolved)`
+pair, so a single thread flipping to resolved (or a new thread appearing)
+changes the digest and counts as activity; there is no `threads_unresolved`
+count anywhere in the module. `mergeability.py` uses `isResolved` on its own
+to emit a `thread-unresolved:<id>` requirement per unresolved thread. Neither
+script's Python currently reads `isOutdated` or `path` — they travel in the
+response for downstream use (thread routing, stale-thread detection) but are
+not yet consumed by either script.
 
 ### `gh pr view --json` field sets
 
@@ -376,7 +379,7 @@ they compute — there is no single shared set:
 
 | Script | `--json` fields | Used for |
 |---|---|---|
-| `pr_watch.py` | `headRefOid,statusCheckRollup,reviews,mergeStateStatus` | head-SHA change detection, check/review settlement polling |
+| `pr_watch.py` | `headRefOid,state,statusCheckRollup,reviews,comments` | one tick's activity fingerprint (head/checks/reviews/comments) plus `state` to detect the PR leaving OPEN — never `mergeStateStatus`, which `pr_watch.py` does not request at all |
 | `mergeability.py` | `mergeStateStatus,isDraft,statusCheckRollup,reviewDecision` | the unmet-requirement list (draft, behind/dirty, failing checks, missing approval) |
 | `schedule.py` | `createdAt,reviews` (one call per child with a mapped PR, inside `_populate_prs`), plus `mergeability.py`'s own field set again via `mergeability._fetch` | `opened_at` (the FIFO merge-queue fallback for gate-free children) and the real `gates`/`gate_cleared_at` readiness `became_ready_at` sorts on — reusing `mergeability.requirements()` rather than re-deriving check/review/thread logic |
 
@@ -388,7 +391,7 @@ field-by-field from `mergeStateStatus` + `statusCheckRollup` +
 Runnable examples:
 
 ```bash
-gh pr view <pr#> --repo <owner>/<repo> --json headRefOid,statusCheckRollup,reviews,mergeStateStatus
+gh pr view <pr#> --repo <owner>/<repo> --json headRefOid,state,statusCheckRollup,reviews,comments
 gh pr view <pr#> --repo <owner>/<repo> --json mergeStateStatus,isDraft,statusCheckRollup,reviewDecision
 gh pr view <pr#> --repo <owner>/<repo> --json createdAt,reviews
 ```
@@ -405,8 +408,8 @@ python3 epic/scripts/pr_watch.py --repo <owner>/<repo> --pr <pr#> --reset-backof
 | Exit | Event | What the driver does |
 |---|---|---|
 | `0` | `{"event":"activity","changed":["reviews"],"head":…}` | Re-run `mergeability.py`, act on what is unmet |
-| `0` | `{"event":"pr-closed","state":"MERGED"}` | Stop watching |
-| `1` | `{"event":"waiting","next_tick_in_s":283,"quiet_s":1240}` (quiet tick; the very first tick also carries `"armed":true`) | Schedule the next tick |
+| `0` | `{"event":"pr-closed","state":"MERGED","head":…}` | Stop watching (fires on ANY non-`OPEN` state — `CLOSED` too, not only `MERGED`) |
+| `1` | `{"event":"waiting","next_tick_in_s":283,"quiet_s":1240}` (quiet tick; a tick with no stored fingerprint — the watch's first tick, or its first tick again after `--stop` deleted the cursor — also carries `"armed":true`) | Schedule the next tick |
 | `1` | `{"event":"waiting","next_tick_in_s":283,"reason":"gh-error","consecutive_errors":3}` (a failed `gh` call; note there is no `quiet_s` key on this shape — a driver that reads it unconditionally will `KeyError`) | Schedule the next tick |
 | `2` | `{"event":"error","detail":…,"consecutive":8}` | Sustained `gh` outage — diagnose |
 | `0` (via `--stop`) | `{"event":"stopped","cursor_removed":true\|false}` | Watch ended; cursor removed if one existed |

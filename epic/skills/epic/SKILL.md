@@ -355,13 +355,21 @@ in the merge phase — width-1 is what lets each PR rebase exactly once, onto th
    - `check-failing:<name>` → diagnose from the run, dispatch the implementer if
      your harness supports subagents (otherwise make the fix inline), push.
    - `check-pending:<name>` → arm the watch and YIELD, never sleep and never
-     block: `python epic/scripts/pr_watch.py --repo <owner/name> --pr <n>
-     --reset-backoff`. It returns immediately with either
-     `{"event":"activity",...}` (exit 0 — re-run `mergeability.py` and act) or
-     `{"event":"waiting","next_tick_in_s":N}` (exit 1 — schedule the next tick
-     at N seconds, clamped to your scheduler's range). There is no key to
-     select and no deadline to set: the watch reports ANY PR activity and
-     `mergeability.py` stays the sole authority on what is actionable.
+     block. Arm it — the first tick of a watch, and again right after a
+     push — with `python epic/scripts/pr_watch.py --repo <owner/name> --pr <n>
+     --reset-backoff`; every tick after that passes NO flag (or
+     `--resume-backoff`, which asserts the same default). Re-passing
+     `--reset-backoff` on every tick pins the watch at the floor and defeats
+     the backoff — literally worse than the fixed staircase this replaced,
+     since it polls every 15s forever instead of widening toward 900s. It
+     returns immediately with one of: `{"event":"activity",...}` (exit 0 —
+     re-run `mergeability.py` and act), `{"event":"waiting","next_tick_in_s":N}`
+     (exit 1 — schedule the next tick at N seconds, clamped to your
+     scheduler's range), `{"event":"pr-closed",...}` (exit 0 — stop watching),
+     or `{"event":"error",...}` (exit 2 — sustained `gh` outage, diagnose).
+     There is no key to select and no deadline to set: the watch reports ANY
+     PR activity and `mergeability.py` stays the sole authority on what is
+     actionable.
    - `check-missing:<name>` → a required check never started; diagnose why
      (workflow trigger misconfigured? branch protection stale?) rather than
      waiting forever — if it still hasn't started, park with a diagnostic naming
@@ -469,9 +477,11 @@ produced. Parallelism buys the wave everything before that line.
 harness supports subagents, otherwise executed inline, sequentially, in the wave
 order `schedule.py` returned (`--serial` forces this path even when subagents
 are available): worktree → context → pin → implement → `pre-review` gates → pre-PR
-reviews → PR-open → Status = In Review → prose-gate resolution, ending when every
-prose gate is clean. It NEVER rebases for merge, NEVER arms `--auto`, NEVER
-merges, and never touches another child's worktree or branch.
+reviews → PR-open → Status = In Review → prose-gate resolution. A single
+invocation of this sequence ends one of two ways: every prose gate goes clean,
+or the invocation yields a `waiting` outcome for the run loop to resume on a
+later tick (see below) — either way it NEVER rebases for merge, NEVER arms
+`--auto`, NEVER merges, and never touches another child's worktree or branch.
 
 **Prose-gate resolution yields rather than waits.** Bot-review latency (CI,
 CodeRabbit, Copilot, Claude Review) is the largest single cost in a child's
@@ -532,8 +542,14 @@ mechanics described above.
 
 CI/CodeRabbit/Copilot waits are never bounded by a deadline. A watch ends only
 when the PR stops being OPEN, when `pr_watch.py --stop` is run, or when the run
-terminates. A long silence is REPORTED by `status.py` (`watches[]`: child, PR,
-`quiet_s`, and the facet that last moved) and is never a reason to park.
+terminates. A long silence is REPORTED by `status.py` (`watches[]`: `child`,
+`pr`, `quiet_s`, and `last_activity` — the list of facet names that moved on
+the last activity tick) and is never by itself a reason to park. This does not
+weaken `CHILD_DRIVE_CEILING_S` above: that ceiling exists to catch a child that
+is genuinely abandoned — In Progress with no active drive **and no live
+watch**. A child that has yielded to the run loop with a live watch is
+progressing normally under the run loop's ticks and is never parked on elapsed
+time alone, however long its `quiet_s` grows.
 
 **Circuit breakers:**
 - Convergence stall after re-pin / gate unfixable / a resource ceiling exceeded /
