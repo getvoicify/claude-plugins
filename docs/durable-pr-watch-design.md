@@ -75,10 +75,12 @@ the ceiling in about eight ticks, roughly 35 minutes.
 Jitter desynchronises parallel wave members, removing the current thundering
 herd.
 
-- `--reset-backoff` — fresh arm (e.g. straight after a push). Starts at step 0.
+The step advances by one on every quiet tick. It returns to 0 only on a real
+head change — chat noise on a busy PR must not pin the watch at the fast tier.
+
+- `--reset-backoff` — fresh arm (e.g. straight after a push). Forces step 0.
 - `--resume-backoff` — the driver woke, found nothing actionable, and is
-  re-arming. Continues from the stored step, so a chatty PR cannot pin the
-  watch at the fast tier.
+  re-arming. Asserts the default: continue from the stored step.
 
 `gh` errors advance a **separate** error backoff that honours `Retry-After` and
 `x-ratelimit-reset` when they can be parsed from stderr. Exit `2` only after
@@ -92,10 +94,11 @@ as-is. The script stays harness-agnostic.
 ### Cursor
 
 `~/.cache/epic/watch/<owner>__<name>__<pr>.json`, overridable with
-`--state-dir` or `EPIC_WATCH_DIR`. It holds exactly four fields: last
-fingerprint, backoff step, consecutive error count, and the timestamp of the
-last observed activity (which is what `quiet_s` and `status.py`'s silence
-report are derived from).
+`--state-dir` or `EPIC_WATCH_DIR`. It holds exactly five fields: last
+fingerprint, backoff step, consecutive error count, the timestamp of the last
+observed activity, and the facets that moved at that timestamp. The last two
+are what `quiet_s` and `status.py`'s silence report
+(`waiting 47m on PR #12, last activity: checks`) are derived from.
 
 **Missing or corrupt means start fresh at step 0.** Losing the cursor costs one
 wasted fast-tier poll and nothing else. That is what keeps this compatible with
