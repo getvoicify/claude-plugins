@@ -764,454 +764,6 @@ def test_parse_claims_none():
     assert parse_claims(None) == []
 
 
-# Task 10: pr_watch — responsive PR monitoring
-
-from pr_watch import backoff, diff_event, snapshot
-
-
-def test_snapshot_records_head_and_check_states():
-    pr = {
-        "headRefOid": "a1b2c3",
-        "statusCheckRollup": [
-            {"name": "unit", "status": "COMPLETED", "conclusion": "SUCCESS"}
-        ],
-        "reviews": [],
-    }
-    snap = snapshot(pr, [])
-    assert snap["head"] == "a1b2c3"
-    assert snap["checks"] == "SUCCESS"
-
-
-def test_snapshot_checks_pending_when_any_incomplete():
-    pr = {
-        "headRefOid": "a1b2c3",
-        "statusCheckRollup": [
-            {"name": "unit", "status": "COMPLETED", "conclusion": "SUCCESS"},
-            {"name": "lint", "status": "IN_PROGRESS", "conclusion": None},
-        ],
-        "reviews": [],
-    }
-    assert snapshot(pr, [])["checks"] == "PENDING"
-
-
-def test_snapshot_records_latest_review_state_per_author():
-    pr = {
-        "headRefOid": "a1b2c3",
-        "statusCheckRollup": [],
-        "reviews": [
-            {"author": "coderabbitai", "state": "COMMENTED",
-             "submittedAt": "2026-08-17T09:00:00Z"},
-            {"author": "coderabbitai", "state": "APPROVED",
-             "submittedAt": "2026-08-17T10:00:00Z"},
-        ],
-    }
-    assert snapshot(pr, [])["coderabbitai"] == "APPROVED"
-
-
-def test_snapshot_counts_unresolved_threads():
-    pr = {"headRefOid": "a1b2c3", "statusCheckRollup": [], "reviews": []}
-    threads = [{"id": "T_1", "isResolved": False}, {"id": "T_2", "isResolved": True}]
-    assert snapshot(pr, threads)["threads_unresolved"] == 1
-
-
-def test_diff_event_returns_none_when_nothing_awaited_changed():
-    prev = {"head": "a1", "checks": "PENDING", "coderabbitai": "COMMENTED"}
-    curr = {"head": "a1", "checks": "PENDING", "coderabbitai": "APPROVED"}
-    assert diff_event(prev, curr, ["checks"]) is None
-
-
-def test_diff_event_reports_first_awaited_change():
-    prev = {"head": "a1", "checks": "PENDING"}
-    curr = {"head": "a1", "checks": "SUCCESS"}
-    event = diff_event(prev, curr, ["checks"])
-    assert event["event"] == "checks"
-    assert event["state"] == "SUCCESS"
-    assert event["head"] == "a1"
-
-
-def test_diff_event_reports_head_change_even_when_not_awaited():
-    prev = {"head": "a1", "checks": "PENDING"}
-    curr = {"head": "b2", "checks": "PENDING"}
-    assert diff_event(prev, curr, ["checks"])["event"] == "head-changed"
-
-
-def test_backoff_starts_fast_and_widens_to_a_ceiling():
-    assert backoff(0) == 15
-    assert backoff(120) == 30
-    assert backoff(600) == 60
-    assert backoff(86400) == 60
-
-
-# Finding 1: author shape + mixed check types
-
-def test_snapshot_author_as_dict_with_login():
-    """Author object with login key → snapshot uses login as dict key."""
-    pr = {
-        "headRefOid": "a1b2c3",
-        "statusCheckRollup": [],
-        "reviews": [
-            {"author": {"login": "coderabbitai"}, "state": "APPROVED",
-             "submittedAt": "2026-08-17T10:00:00Z"},
-        ],
-    }
-    snap = snapshot(pr, [])
-    assert snap["coderabbitai"] == "APPROVED"
-
-
-def test_snapshot_author_as_string_still_works():
-    """Backwards compat: string author still works (for fixtures)."""
-    pr = {
-        "headRefOid": "a1b2c3",
-        "statusCheckRollup": [],
-        "reviews": [
-            {"author": "coderabbitai", "state": "APPROVED",
-             "submittedAt": "2026-08-17T10:00:00Z"},
-        ],
-    }
-    snap = snapshot(pr, [])
-    assert snap["coderabbitai"] == "APPROVED"
-
-
-def test_snapshot_mixed_checks_handles_statuscontext():
-    """StatusContext (legacy) has 'state', CheckRun has 'status'."""
-    pr = {
-        "headRefOid": "a1b2c3",
-        "statusCheckRollup": [
-            {"context": "ci/travis", "state": "SUCCESS"},  # StatusContext
-            {"name": "unit", "status": "COMPLETED", "conclusion": "SUCCESS"}  # CheckRun
-        ],
-        "reviews": [],
-    }
-    snap = snapshot(pr, [])
-    assert snap["checks"] == "SUCCESS"
-
-
-def test_snapshot_mixed_checks_statuscontext_pending():
-    """StatusContext with state PENDING → checks PENDING."""
-    pr = {
-        "headRefOid": "a1b2c3",
-        "statusCheckRollup": [
-            {"context": "ci/travis", "state": "PENDING"},
-        ],
-        "reviews": [],
-    }
-    snap = snapshot(pr, [])
-    assert snap["checks"] == "PENDING"
-
-
-def test_snapshot_mixed_checks_statuscontext_failure():
-    """StatusContext with state FAILURE → checks FAILURE."""
-    pr = {
-        "headRefOid": "a1b2c3",
-        "statusCheckRollup": [
-            {"context": "ci/travis", "state": "FAILURE"},
-        ],
-        "reviews": [],
-    }
-    snap = snapshot(pr, [])
-    assert snap["checks"] == "FAILURE"
-
-
-# Finding 2: resilience to transient errors
-
-def test_main_resilience_survives_transient_errors_and_recovers(monkeypatch):
-    """Initial PENDING snapshot, _fetch fails twice then succeeds with change → returns 0 with event.
-
-    GUARDS: try/except around _fetch and counter reset on success.
-    WOULD FAIL if: try/except removed (first GhError propagates), or counter not reset (reaches 5 on retry).
-    """
-    from pr_watch import main
-
-    fetch_call_count = [0]
-
-    def fetching_snapshot(repo, pr_number):
-        fetch_call_count[0] += 1
-        if fetch_call_count[0] <= 2:
-            raise gh.GhError(502, "Bad Gateway")
-        # Third call: success with changed state
-        return {
-            "headRefOid": "a1b2c3",
-            "statusCheckRollup": [
-                {"name": "unit", "status": "COMPLETED", "conclusion": "SUCCESS"}
-            ],
-            "reviews": [],
-        }, []
-
-    # Initial snapshot: PENDING (not settled)
-    initial_call_count = [0]
-    def fetching_initial(repo, pr_number):
-        initial_call_count[0] += 1
-        if initial_call_count[0] == 1:
-            # Initial: PENDING so not settled, enters loop
-            return {
-                "headRefOid": "a1b2c3",
-                "statusCheckRollup": [
-                    {"name": "unit", "status": "IN_PROGRESS", "conclusion": None}
-                ],
-                "reviews": [],
-            }, []
-        return fetching_snapshot(repo, pr_number)
-
-    monkeypatch.setattr("pr_watch._fetch", fetching_initial)
-    monkeypatch.setattr("pr_watch.time.sleep", lambda x: None)
-
-    result = main(["--repo", "a/b", "--pr", "1", "--await", "checks", "--deadline", "10000"])
-    assert result == 0
-    assert fetch_call_count[0] >= 3  # Was called 3+ times
-
-
-def test_main_resilience_terminates_at_five_consecutive_failures(monkeypatch):
-    """Initial PENDING snapshot, _fetch fails permanently → returns 1 with error event at exactly 5 consecutive.
-
-    GUARDS: consecutive failure counter and 5-failure cap.
-    WOULD FAIL if: cap changed to 4, 6, or removed (infinite retries).
-    """
-    from pr_watch import main
-    import json
-    from io import StringIO
-
-    fetch_call_count = [0]
-
-    def always_fail(repo, pr_number):
-        fetch_call_count[0] += 1
-        raise gh.GhError(502, "Bad Gateway")
-
-    # Initial snapshot: PENDING
-    initial_call_count = [0]
-    def fetching_initial(repo, pr_number):
-        initial_call_count[0] += 1
-        if initial_call_count[0] == 1:
-            return {
-                "headRefOid": "a1b2c3",
-                "statusCheckRollup": [
-                    {"name": "unit", "status": "IN_PROGRESS", "conclusion": None}
-                ],
-                "reviews": [],
-            }, []
-        return always_fail(repo, pr_number)
-
-    monkeypatch.setattr("pr_watch._fetch", fetching_initial)
-    monkeypatch.setattr("pr_watch.time.sleep", lambda x: None)
-
-    # Capture stdout to check the error event
-    captured_output = []
-    monkeypatch.setattr("builtins.print", lambda x: captured_output.append(x))
-
-    result = main(["--repo", "a/b", "--pr", "1", "--await", "checks", "--deadline", "10000"])
-    assert result == 1
-    assert len(captured_output) == 1
-    event = json.loads(captured_output[0])
-    assert event["event"] == "error"
-    assert event["consecutive"] == 5  # Exactly 5
-
-
-def test_main_resilience_counter_resets_on_success(monkeypatch):
-    """Counter resets on success: 4 fails → success (no change) → 4 fails → success (change) → returns 0, no error event.
-
-    GUARDS: consecutive_errors = 0 on successful _fetch.
-    WOULD FAIL if: reset deleted → counter accumulates 4+4=8 (exceeds 5) → error event emitted, returns 1.
-    """
-    from pr_watch import main
-    import json
-
-    fetch_call_count = [0]
-    pending_snapshot = {
-        "headRefOid": "a1b2c3",
-        "statusCheckRollup": [
-            {"name": "unit", "status": "IN_PROGRESS", "conclusion": None}
-        ],
-        "reviews": [],
-    }
-    success_snapshot = {
-        "headRefOid": "a1b2c3",
-        "statusCheckRollup": [
-            {"name": "unit", "status": "COMPLETED", "conclusion": "SUCCESS"}
-        ],
-        "reviews": [],
-    }
-
-    def fetching_pattern(repo, pr_number):
-        fetch_call_count[0] += 1
-        # Call 1: initial PENDING (enters loop)
-        # Calls 2-5: fail (4 consecutive)
-        # Call 6: success, returns IDENTICAL PENDING (no change, no event, counter resets)
-        # Calls 7-10: fail (4 consecutive again)
-        # Call 11: success, returns SUCCESS (change, diff_event fires, returns 0)
-        if fetch_call_count[0] == 1:
-            return pending_snapshot, []
-        if fetch_call_count[0] in {2, 3, 4, 5}:
-            raise gh.GhError(502, "Bad Gateway")
-        if fetch_call_count[0] == 6:
-            # Success, but identical snapshot (no change)
-            return pending_snapshot, []
-        if fetch_call_count[0] in {7, 8, 9, 10}:
-            raise gh.GhError(502, "Bad Gateway")
-        if fetch_call_count[0] == 11:
-            # Success with real change
-            return success_snapshot, []
-        raise gh.GhError(502, "Should not reach")
-
-    monkeypatch.setattr("pr_watch._fetch", fetching_pattern)
-    monkeypatch.setattr("pr_watch.time.sleep", lambda x: None)
-
-    captured_output = []
-    monkeypatch.setattr("builtins.print", lambda x: captured_output.append(x))
-
-    result = main(["--repo", "a/b", "--pr", "1", "--await", "checks", "--deadline", "10000"])
-    assert result == 0
-    # Verify no error event was emitted (would have one if counter wasn't reset)
-    for output in captured_output:
-        event = json.loads(output)
-        assert event["event"] != "error", "Counter was not reset: error event should not have been emitted"
-
-
-# Finding 3: settled state detection
-
-from pr_watch import settled_event
-
-
-def test_settled_event_already_success():
-    """Awaited key already SUCCESS → return settled event."""
-    curr = {"head": "a1", "checks": "SUCCESS"}
-    event = settled_event(curr, ["checks"])
-    assert event is not None
-    assert event["event"] == "checks"
-    assert event["initial"] is True
-
-
-def test_settled_event_already_failure():
-    """Awaited key already FAILURE → return settled event."""
-    curr = {"head": "a1", "checks": "FAILURE"}
-    event = settled_event(curr, ["checks"])
-    assert event is not None
-    assert event["event"] == "checks"
-    assert event["initial"] is True
-
-
-def test_settled_event_pending_not_settled():
-    """Awaited key PENDING is not settled."""
-    curr = {"head": "a1", "checks": "PENDING"}
-    event = settled_event(curr, ["checks"])
-    assert event is None
-
-
-def test_settled_event_threads_zero_settled():
-    """threads_unresolved == 0 is settled."""
-    curr = {"head": "a1", "threads_unresolved": 0}
-    event = settled_event(curr, ["threads_unresolved"])
-    assert event is not None
-    assert event["initial"] is True
-
-
-def test_settled_event_threads_nonzero_not_settled():
-    """threads_unresolved > 0 is not settled."""
-    curr = {"head": "a1", "threads_unresolved": 2}
-    event = settled_event(curr, ["threads_unresolved"])
-    assert event is None
-
-
-def test_deadline_event_includes_snapshot(monkeypatch):
-    """Deadline exceeded → returns 1, event includes snapshot and awaited keys.
-
-    GUARDS: snapshot included in deadline event, event == "deadline", awaited preserved.
-    WOULD FAIL if: snapshot key removed, event type changed, or awaited list dropped.
-    """
-    from pr_watch import main
-    import json
-
-    # Mock time to jump past deadline immediately
-    time_sequence = [0, 1000]  # First call returns 0, second jumps to 1000
-    time_calls = [0]
-
-    def fake_monotonic():
-        result = time_sequence[time_calls[0]]
-        time_calls[0] += 1
-        return result
-
-    # Initial snapshot: PENDING (not settled)
-    def fetching_once(repo, pr_number):
-        return {
-            "headRefOid": "abc123",
-            "statusCheckRollup": [
-                {"name": "ci", "status": "IN_PROGRESS", "conclusion": None}
-            ],
-            "reviews": [
-                {"author": {"login": "bot"}, "state": "COMMENTED", "submittedAt": "2026-08-17T10:00:00Z"}
-            ],
-        }, []
-
-    monkeypatch.setattr("pr_watch._fetch", fetching_once)
-    monkeypatch.setattr("pr_watch.time.monotonic", fake_monotonic)
-    monkeypatch.setattr("pr_watch.time.sleep", lambda x: None)
-
-    captured_output = []
-    monkeypatch.setattr("builtins.print", lambda x: captured_output.append(x))
-
-    result = main(["--repo", "a/b", "--pr", "1", "--await", "checks", "--deadline", "100"])
-    assert result == 1
-    assert len(captured_output) == 1
-    event = json.loads(captured_output[0])
-    assert event["event"] == "deadline"
-    assert "snapshot" in event
-    assert event["snapshot"]["head"] == "abc123"
-    assert event["snapshot"]["checks"] == "PENDING"
-    assert event["awaited"] == ["checks"]
-
-
-# StatusContext unrecognized state should be PENDING (fail-open)
-
-def test_snapshot_statuscontext_unrecognized_state_is_pending():
-    """StatusContext with unrecognized state → checks PENDING (fail-open).
-
-    GUARDS: unrecognized states treated as pending, not passing.
-    WOULD FAIL if: unrecognized states fall through to "SUCCESS".
-    """
-    pr = {
-        "headRefOid": "a1b2c3",
-        "statusCheckRollup": [
-            {"context": "ci/unknown", "state": "QUEUED"},  # Unrecognized
-        ],
-        "reviews": [],
-    }
-    snap = snapshot(pr, [])
-    assert snap["checks"] == "PENDING"
-
-
-def test_snapshot_statuscontext_none_state_is_pending():
-    """StatusContext with state=None → checks PENDING.
-
-    GUARDS: None state treated as pending, not passing.
-    WOULD FAIL if: None state falls through to "SUCCESS".
-    """
-    pr = {
-        "headRefOid": "a1b2c3",
-        "statusCheckRollup": [
-            {"context": "ci/broken", "state": None},
-        ],
-        "reviews": [],
-    }
-    snap = snapshot(pr, [])
-    assert snap["checks"] == "PENDING"
-
-
-# Finding 4: skip COMMENTED reviews when folding
-
-def test_snapshot_skips_commented_review():
-    """COMMENTED review should not overwrite earlier APPROVED."""
-    pr = {
-        "headRefOid": "a1b2c3",
-        "statusCheckRollup": [],
-        "reviews": [
-            {"author": {"login": "reviewer"}, "state": "APPROVED",
-             "submittedAt": "2026-08-17T10:00:00Z"},
-            {"author": {"login": "reviewer"}, "state": "COMMENTED",
-             "submittedAt": "2026-08-17T11:00:00Z"},
-        ],
-    }
-    snap = snapshot(pr, [])
-    assert snap["reviewer"] == "APPROVED"
-
-
 # Task 11: status.py — drift, sweep plan, completion
 
 from status import drift, epic_complete, sweep_plan
@@ -2904,3 +2456,165 @@ def test_error_backoff_ratelimit_reset_jitter_is_positive_only():
     assert error_backoff(1, stderr, now_epoch=1000000, jitter=-1.0) == 300
     assert error_backoff(1, stderr, now_epoch=1000000, jitter=1.0) == 360
     assert error_backoff(1, stderr, now_epoch=1000000, jitter=0.0) == 300
+
+
+# --- pr_watch.py: one invocation is one tick ------------------------------
+# main() never sleeps. It loads the cursor, fetches once, and either
+# reports activity (exit 0) or reports how long until the next tick
+# (exit 1). That is what makes a wait survivable: no long-lived process to
+# be killed, and a cursor cheap enough to lose.
+
+import pr_watch as _pw
+
+
+def _install_tick(monkeypatch, pr, threads, now="2026-08-22T10:00:00+00:00"):
+    monkeypatch.setattr(_pw, "_fetch", lambda repo, number: (pr, threads))
+    monkeypatch.setattr(_pw, "_now", lambda: now)
+    monkeypatch.setattr(_pw.random, "uniform", lambda lo, hi: 0.0)
+
+
+def test_first_tick_arms_the_watch_and_asks_for_another(tmp_path, monkeypatch, capsys):
+    _install_tick(monkeypatch, _pr(), [])
+    code = _pw.main(["--repo", "o/n", "--pr", "7", "--state-dir", str(tmp_path)])
+    event = json.loads(capsys.readouterr().out)
+    assert code == 1
+    assert event["event"] == "waiting"
+    assert event["armed"] is True
+    assert event["next_tick_in_s"] == 15
+    assert watch_state.load("o/n", 7, str(tmp_path))["fingerprint"] is not None
+
+
+def test_quiet_tick_advances_the_backoff_step(tmp_path, monkeypatch, capsys):
+    _install_tick(monkeypatch, _pr(), [])
+    args = ["--repo", "o/n", "--pr", "7", "--state-dir", str(tmp_path)]
+    _pw.main(args)                      # arm at step 0
+    capsys.readouterr()
+    assert _pw.main(args) == 1
+    event = json.loads(capsys.readouterr().out)
+    assert event["next_tick_in_s"] == 27
+    assert watch_state.load("o/n", 7, str(tmp_path))["step"] == 1
+
+
+def test_quiet_tick_reports_how_long_the_pr_has_been_silent(tmp_path, monkeypatch, capsys):
+    _install_tick(monkeypatch, _pr(), [], now="2026-08-22T10:00:00+00:00")
+    args = ["--repo", "o/n", "--pr", "7", "--state-dir", str(tmp_path)]
+    _pw.main(args)
+    capsys.readouterr()
+    monkeypatch.setattr(_pw, "_now", lambda: "2026-08-22T10:47:00+00:00")
+    _pw.main(args)
+    assert json.loads(capsys.readouterr().out)["quiet_s"] == 2820
+
+
+def test_a_commented_review_ends_the_wait(tmp_path, monkeypatch, capsys):
+    """REGRESSION: the end-to-end form of the CodeRabbit stall."""
+    args = ["--repo", "o/n", "--pr", "7", "--state-dir", str(tmp_path)]
+    _install_tick(monkeypatch, _pr(), [])
+    _pw.main(args)
+    capsys.readouterr()
+    _install_tick(monkeypatch, _pr(reviews=[{
+        "author": {"login": "coderabbitai"}, "state": "COMMENTED",
+        "submittedAt": "2026-08-22T10:05:00Z"}]), [])
+    code = _pw.main(args)
+    event = json.loads(capsys.readouterr().out)
+    assert code == 0
+    assert event["event"] == "activity"
+    assert event["changed"] == ["reviews"]
+
+
+def test_an_empty_rollup_reports_waiting_not_settled(tmp_path, monkeypatch, capsys):
+    """REGRESSION: the instant false positive.
+
+    The old settled_event() treated an empty check rollup ("NONE") and zero
+    unresolved threads as terminal, so a watch armed seconds after PR open
+    returned "settled" before CI had even registered.
+    """
+    _install_tick(monkeypatch, _pr(statusCheckRollup=[]), [])
+    code = _pw.main(["--repo", "o/n", "--pr", "7", "--state-dir", str(tmp_path)])
+    assert code == 1
+    assert json.loads(capsys.readouterr().out)["event"] == "waiting"
+
+
+def test_head_change_resets_the_backoff_to_the_floor(tmp_path, monkeypatch, capsys):
+    args = ["--repo", "o/n", "--pr", "7", "--state-dir", str(tmp_path)]
+    _install_tick(monkeypatch, _pr(), [])
+    _pw.main(args)
+    _pw.main(args)
+    _pw.main(args)                      # step is now 2
+    capsys.readouterr()
+    _install_tick(monkeypatch, _pr(headRefOid="newsha"), [])
+    _pw.main(args)
+    capsys.readouterr()
+    assert watch_state.load("o/n", 7, str(tmp_path))["step"] == 0
+
+
+def test_comment_noise_does_not_reset_the_backoff(tmp_path, monkeypatch, capsys):
+    """A chatty PR must not pin the watch at the fast tier."""
+    args = ["--repo", "o/n", "--pr", "7", "--state-dir", str(tmp_path)]
+    _install_tick(monkeypatch, _pr(), [])
+    _pw.main(args)
+    _pw.main(args)
+    _pw.main(args)                      # step is now 2
+    capsys.readouterr()
+    _install_tick(monkeypatch, _pr(comments=[{"id": "c1"}]), [])
+    _pw.main(args)
+    capsys.readouterr()
+    assert watch_state.load("o/n", 7, str(tmp_path))["step"] == 2
+
+
+def test_reset_backoff_forces_the_floor(tmp_path, monkeypatch, capsys):
+    args = ["--repo", "o/n", "--pr", "7", "--state-dir", str(tmp_path)]
+    _install_tick(monkeypatch, _pr(), [])
+    _pw.main(args)
+    _pw.main(args)
+    _pw.main(args)
+    capsys.readouterr()
+    _pw.main(args + ["--reset-backoff"])
+    assert json.loads(capsys.readouterr().out)["next_tick_in_s"] == 15
+
+
+def test_resume_backoff_continues_from_the_stored_step(tmp_path, monkeypatch, capsys):
+    args = ["--repo", "o/n", "--pr", "7", "--state-dir", str(tmp_path)]
+    _install_tick(monkeypatch, _pr(), [])
+    _pw.main(args)
+    _pw.main(args)                      # step is now 1
+    capsys.readouterr()
+    _pw.main(args + ["--resume-backoff"])
+    assert json.loads(capsys.readouterr().out)["next_tick_in_s"] == 49
+
+
+def test_activity_records_what_moved_on_the_cursor(tmp_path, monkeypatch, capsys):
+    args = ["--repo", "o/n", "--pr", "7", "--state-dir", str(tmp_path)]
+    _install_tick(monkeypatch, _pr(), [])
+    _pw.main(args)
+    capsys.readouterr()
+    _install_tick(monkeypatch, _pr(statusCheckRollup=[
+        {"name": "ci", "status": "COMPLETED", "conclusion": "SUCCESS"}]), [])
+    _pw.main(args)
+    capsys.readouterr()
+    assert watch_state.load("o/n", 7, str(tmp_path))["last_changed"] == ["checks"]
+
+
+def test_a_closed_pr_ends_the_watch_and_clears_the_cursor(tmp_path, monkeypatch, capsys):
+    args = ["--repo", "o/n", "--pr", "7", "--state-dir", str(tmp_path)]
+    _install_tick(monkeypatch, _pr(), [])
+    _pw.main(args)
+    capsys.readouterr()
+    _install_tick(monkeypatch, _pr(state="MERGED"), [])
+    code = _pw.main(args)
+    event = json.loads(capsys.readouterr().out)
+    assert code == 0
+    assert event["event"] == "pr-closed"
+    assert event["state"] == "MERGED"
+    assert not watch_state.cursor_path("o/n", 7, str(tmp_path)).exists()
+
+
+def test_the_tick_never_sleeps(tmp_path, monkeypatch, capsys):
+    """The stall this whole rewrite exists to fix: a blocking wait cannot
+    outlive its tool call, so main() must not block at all."""
+    _install_tick(monkeypatch, _pr(), [])
+    monkeypatch.setattr(
+        _pw.time, "sleep",
+        lambda *a: pytest.fail("main() must never sleep"),
+        raising=False,
+    )
+    _pw.main(["--repo", "o/n", "--pr", "7", "--state-dir", str(tmp_path)])
