@@ -297,8 +297,11 @@ config leaves it blank).
    `copilot_review` is enabled, request a Copilot review via the
    `requested_reviewers` call in the reference's "Review threads + Copilot review"
    section; a 422 means Copilot review is not available on this repo → treat Copilot
-   as **N/A** (do not gate on it) and note that. Record whether the request succeeded
-   (gates the Copilot wait/fix loop). Set Project Status = **In Review**.
+   as **N/A** (do not gate on it) and note that. Record whether the request succeeded —
+   a successful request means Copilot's eventual review is one of the facets
+   `pr_watch.py`'s fingerprint watches for once the merge phase arms a tick on it
+   (§3 "Ask GitHub what is unmet", the `check-pending:<name>` bullet); nothing here
+   waits on it directly. Set Project Status = **In Review**.
 
 ### Convergence contract (replaces every review round budget)
 
@@ -388,9 +391,13 @@ in the merge phase — width-1 is what lets each PR rebase exactly once, onto th
      blocking `mergeStateStatus` (`BLOCKED`, `UNKNOWN`, or any value added later)
      that checks, threads, and review decision could not explain. Treat it as a
      genuine blocker, never as noise — GitHub is refusing the merge for a reason
-     the driver could not derive. Re-run `mergeability.py` once after a short
-     wait, since some states (notably `UNKNOWN`) are transient while GitHub
-     computes mergeability. If it persists: disarm `--auto` if it was armed, then
+     the driver could not derive. Some states (notably `UNKNOWN`) are transient
+     while GitHub computes mergeability, so treat this the same as
+     `check-pending:<name>` above: arm the watch and YIELD, never sleep and
+     never block — the very next tick, whether it reports `activity` or
+     `waiting`, re-enters this requirement-resolution step and re-runs
+     `mergeability.py` fresh regardless. If the same `blocked-unexplained:<state>`
+     still comes back on that re-check: disarm `--auto` if it was armed, then
      park with the raw `mergeStateStatus` value named in the diagnostic —
      interactive STOPs and hands off with the same diagnostic — since that string
      is what a human needs to diagnose it.
@@ -428,7 +435,12 @@ leave a STOPPED PR armed to auto-merge unresolved findings.
 
 An orchestrator loop. Each cycle:
 
-1. Recover ALL state from `gh` — stateless recovery is unchanged and HARD.
+1. Recover ALL state from `gh` — stateless recovery is unchanged and HARD. This
+   recovery also runs `python epic/scripts/status.py --epic <n> --repo <owner/name>`:
+   its `complete`/`drift` are cross-checked against this cycle's own findings, and
+   its `watches[]` (`child`, `pr`, `quiet_s`, `last_activity`) is the silence report
+   for step 6's reschedule and the final report — `status.py` is read-only and never
+   overrides `schedule.py`'s own authoritative wave/queue computation in step 2.
 2. `python epic/scripts/schedule.py --epic <n> --repo <owner/name> --max-parallel
    <epic-config.max_parallel>` → the runnable wave, the FIFO merge queue, and any
    halt reason (`--repo` names the epic's own home repo, already resolved in step 1
@@ -450,15 +462,29 @@ An orchestrator loop. Each cycle:
    child looks identical to an untouched Todo child on the very next cycle, so it
    gets dispatched a SECOND time — two drive subagents then race on the same
    worktree/branch/PR, and the second one's preflight STOPs on `worktree-exists`.
-4. Marshal the merge queue: admit `merge_queue[0]` ONLY, run the merge phase for
+4. Tick every live watch — every child at Status = In Review with an open PR that
+   has arm-and-yielded (§3 "Ask GitHub what is unmet", the `check-pending:<name>`
+   bullet) is a live watch. For each one, run `python epic/scripts/pr_watch.py
+   --repo <owner/name> --pr <n>` with NO flag — re-passing `--reset-backoff` on
+   every tick pins the watch at its floor and defeats the backoff, exactly the
+   mistake that bullet warns against. On `{"event":"activity",...}` (exit 0),
+   re-drive that child THIS cycle — via a fresh drive subagent if your harness
+   supports them, otherwise by re-entering its drive step inline — so it re-runs
+   `mergeability.py` and acts on what moved. On `{"event":"pr-closed",...}`
+   (exit 0), stop watching: the PR is no longer OPEN. On `{"event":"waiting",
+   "next_tick_in_s":N}` (exit 1), keep `N` for step 6's wake-delay minimum. On
+   `{"event":"error",...}` (exit 2), that one watch hit a sustained `gh` outage —
+   diagnose it per the error-handling policy without letting it block ticking the
+   other live watches.
+5. Marshal the merge queue: admit `merge_queue[0]` ONLY, run the merge phase for
    it — its requirement-resolution step (§3 "Ask GitHub what is unmet") re-derives
    what's unmet straight from `gh` and `mergeability.py` every time it runs, so a
    child resumed mid-merge on a later wake needs no separate resume path, it just
    re-enters that step where GitHub's live state says it is — then recompute.
-5. Reschedule. The wake delay is the MINIMUM `next_tick_in_s` across all live
-   watches, clamped to your scheduler's range (`ScheduleWakeup` has a 60s
-   floor, so early ticks clamp up; an in-session loop honours them as-is).
-   One scheduler for the whole epic, never one per child. No eligible unparked child left and the
+6. Reschedule. The wake delay is the MINIMUM `next_tick_in_s` across the ticks
+   step 4 just collected, clamped to your scheduler's range (`ScheduleWakeup`
+   has a 60s floor, so early ticks clamp up; an in-session loop honours them
+   as-is). One scheduler for the whole epic, never one per child. No eligible unparked child left and the
    epic complete (every sub-issue `state == CLOSED`, none parked-open, and the
    sub-issue list is non-empty — an EMPTY children fetch is NEVER completion; treat
    it as a recovery failure and STOP to diagnose, since `epic_complete([])` is
@@ -544,18 +570,27 @@ CI/CodeRabbit/Copilot waits are never bounded by a deadline. A watch ends only
 when the PR stops being OPEN, when `pr_watch.py --stop` is run, or when the run
 terminates. A long silence is REPORTED by `status.py` (`watches[]`: `child`,
 `pr`, `quiet_s`, and `last_activity` — the list of facet names that moved on
-the last activity tick) and is never by itself a reason to park. This does not
+the last activity tick) and is never by itself a reason to park.
+`status.py` finds cursors via `EPIC_WATCH_DIR` (or the default
+`~/.cache/epic/watch`) only — it has no `--state-dir`-equivalent flag, so a
+driver that ticks watches with `pr_watch.py --state-dir <custom>` MUST also
+export `EPIC_WATCH_DIR=<custom>`, or `watches[]` comes back silently empty.
+This does not
 weaken `CHILD_DRIVE_CEILING_S` above: that ceiling exists to catch a child that
-is genuinely abandoned — In Progress with no active drive **and no live
-watch**. A child that has yielded to the run loop with a live watch is
-progressing normally under the run loop's ticks and is never parked on elapsed
-time alone, however long its `quiet_s` grows.
+is genuinely abandoned — In Progress with no active drive, the same state named
+above (Status = In Progress with no PR). A child that has yielded to the run
+loop is at Status = In Review with an open PR, a live watch, never In Progress
+— so it is never subject to this ceiling in the first place, and is never
+parked on elapsed time alone however long its `quiet_s` grows.
 
 **Circuit breakers:**
 - Convergence stall after re-pin / gate unfixable / a resource ceiling exceeded /
   a subagent BLOCKED with no defensible path (if your harness runs steps via
   subagents — otherwise an inline step stalled the same way) → **park**: if
-  `--auto` is armed, FIRST run `gh pr merge <pr> --disable-auto`; comment
+  `--auto` is armed, FIRST run `gh pr merge <pr> --disable-auto`; if this child
+  has a live watch, run `python epic/scripts/pr_watch.py --repo <owner/name>
+  --pr <n> --stop` too — a parked child's cursor otherwise stays live and keeps
+  contributing to step 6's wake-delay minimum forever; comment
   `FAILED: <precise reason + evidence URLs>` on the child, with a machine-readable
   trailer `epic-park: {"code":…, "gate":…, "signature":…, "waiting_on_human":…}`;
   set Status = **Parked**; leave worktree + PR intact. **Siblings continue** — a

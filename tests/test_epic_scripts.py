@@ -2762,6 +2762,41 @@ def test_reset_backoff_persists_across_a_failed_fetch(tmp_path, monkeypatch, cap
     assert watch_state.load("o/n", 7, str(tmp_path))["step"] == 0
 
 
+# --- pr_watch.py: main() must never exit with no JSON on stdout ----------
+# The whole rewrite exists to eliminate a silent stall: an uncaught
+# exception used to exit 1 (or crash) with NOTHING printed on stdout, so
+# the driver read exit 1 as "no activity yet, schedule the next tick" and
+# then crashed on the absent next_tick_in_s. Any exception besides
+# gh.GhError must still emit exactly one JSON object and exit 2 -- the
+# documented hard-error code -- never escape uncaught.
+
+def test_a_null_pull_request_in_the_graphql_response_still_emits_json(
+    tmp_path, monkeypatch, capsys
+):
+    """A null `pullRequest` (deleted/inaccessible PR) makes `_fetch` raise
+    TypeError deep inside fingerprinting. That must not escape main()."""
+    def boom(repo, number):
+        raise TypeError("'NoneType' object is not subscriptable")
+    monkeypatch.setattr(_pw, "_fetch", boom)
+    code = _pw.main(["--repo", "o/n", "--pr", "7", "--state-dir", str(tmp_path)])
+    event = json.loads(capsys.readouterr().out)
+    assert code == 2
+    assert event["event"] == "error"
+    assert "NoneType" in event["detail"]
+
+
+def test_a_malformed_repo_value_still_emits_json(tmp_path, capsys):
+    """A `--repo` with no `/` makes `repo.split("/")` raise ValueError on
+    the very first line of `_fetch`, before any `gh` call. That must not
+    escape main() either."""
+    code = _pw.main(
+        ["--repo", "not-a-valid-repo", "--pr", "7", "--state-dir", str(tmp_path)]
+    )
+    event = json.loads(capsys.readouterr().out)
+    assert code == 2
+    assert event["event"] == "error"
+
+
 # --- status.py: which watches have gone quiet -----------------------------
 # A long silence is REPORTED, never parked. This is the replacement for the
 # deadline-to-park circuit breaker: the run stays alive and the operator
@@ -2887,6 +2922,30 @@ def test_a_corrupt_last_activity_at_does_not_crash_the_tick(tmp_path, monkeypatc
     assert code == 1
     assert event["event"] == "waiting"
     assert event["quiet_s"] == 0
+
+
+def test_an_armed_cursor_with_no_last_activity_at_reports_zero_quiet(
+    tmp_path, monkeypatch, capsys
+):
+    """Coverage gap named in the whole-branch review: an already-armed
+    cursor (fingerprint set) that has somehow lost its `last_activity_at`
+    (hand-edited cursor, or a future field predating this one) makes
+    `elapsed_s()` report `quiet_s: 0` on a quiet tick -- indistinguishable
+    from a watch that just saw fresh activity. This pins that behaviour as
+    known and deliberate rather than an unnoticed accident; it is not a
+    fix, since the cursor's own docstring already treats a missing/invalid
+    field as "start fresh" rather than an error."""
+    watch_state.save("o/n", 7, {
+        "fingerprint": pr_fingerprint(_pr(), []), "step": 3, "errors": 0,
+        "last_activity_at": None, "last_changed": [],
+    }, str(tmp_path))
+    _install_tick(monkeypatch, _pr(), [])
+    code = _pw.main(["--repo", "o/n", "--pr", "7", "--state-dir", str(tmp_path)])
+    event = json.loads(capsys.readouterr().out)
+    assert code == 1
+    assert event["event"] == "waiting"
+    assert event["quiet_s"] == 0
+    assert "armed" not in event
 
 
 def test_fetch_carries_the_pr_number_alongside_state(monkeypatch):

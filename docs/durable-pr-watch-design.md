@@ -1,6 +1,6 @@
 # Durable PR watch — design
 
-Status: approved design, not yet implemented
+Status: implemented
 Date: 2026-08-22
 Supersedes: the `--await` / deadline-park behaviour of `epic/scripts/pr_watch.py`
 

@@ -179,58 +179,70 @@ def main(argv=None):
         cursor["step"] = 0
 
     try:
-        pr, threads = _fetch(args.repo, args.pr)
-    except gh.GhError as err:
-        detail = err.stderr or str(err)
-        cursor["errors"] += 1
+        try:
+            pr, threads = _fetch(args.repo, args.pr)
+        except gh.GhError as err:
+            detail = err.stderr or str(err)
+            cursor["errors"] += 1
+            watch_state.save(args.repo, args.pr, cursor, args.state_dir)
+            if cursor["errors"] >= _MAX_ERRORS:
+                return _emit({"event": "error", "detail": detail,
+                              "consecutive": cursor["errors"]}, 2)
+            return _emit({"event": "waiting",
+                          "next_tick_in_s": error_backoff(cursor["errors"], detail,
+                                                          int(time.time()),
+                                                          random.uniform(-1, 1)),
+                          "reason": "gh-error",
+                          "consecutive_errors": cursor["errors"]}, 1)
+
+        cursor["errors"] = 0
+
+        state = pr.get("state")
+        if state and state != "OPEN":
+            watch_state.clear(args.repo, args.pr, args.state_dir)
+            return _emit({"event": "pr-closed", "state": state,
+                          "head": pr.get("headRefOid")}, 0)
+
+        current = fingerprint(pr, threads)
+        changed = changed_facets(cursor.get("fingerprint"), current)
+        now = _now()
+
+        if changed:
+            # Only a real head change earns the floor again — comment noise
+            # on a busy PR must not pin the watch at the fast tier.
+            if "head" in changed:
+                cursor["step"] = 0
+            cursor.update(fingerprint=current, last_activity_at=now, last_changed=changed)
+            watch_state.save(args.repo, args.pr, cursor, args.state_dir)
+            return _emit({"event": "activity", "changed": changed,
+                          "head": current["head"]}, 0)
+
+        arming = cursor.get("fingerprint") is None
+        if arming:
+            cursor.update(fingerprint=current, last_activity_at=now)
+        elif not args.reset:
+            # --reset-backoff holds this tick at the floor it just set;
+            # every other quiet tick widens the gap by one step.
+            cursor["step"] += 1
+
+        delay = backoff_delay(cursor["step"], random.uniform(-1, 1))
         watch_state.save(args.repo, args.pr, cursor, args.state_dir)
-        if cursor["errors"] >= _MAX_ERRORS:
-            return _emit({"event": "error", "detail": detail,
-                          "consecutive": cursor["errors"]}, 2)
-        return _emit({"event": "waiting",
-                      "next_tick_in_s": error_backoff(cursor["errors"], detail,
-                                                      int(time.time()),
-                                                      random.uniform(-1, 1)),
-                      "reason": "gh-error",
-                      "consecutive_errors": cursor["errors"]}, 1)
-
-    cursor["errors"] = 0
-
-    state = pr.get("state")
-    if state and state != "OPEN":
-        watch_state.clear(args.repo, args.pr, args.state_dir)
-        return _emit({"event": "pr-closed", "state": state,
-                      "head": pr.get("headRefOid")}, 0)
-
-    current = fingerprint(pr, threads)
-    changed = changed_facets(cursor.get("fingerprint"), current)
-    now = _now()
-
-    if changed:
-        # Only a real head change earns the floor again — comment noise on a
-        # busy PR must not pin the watch at the fast tier.
-        if "head" in changed:
-            cursor["step"] = 0
-        cursor.update(fingerprint=current, last_activity_at=now, last_changed=changed)
-        watch_state.save(args.repo, args.pr, cursor, args.state_dir)
-        return _emit({"event": "activity", "changed": changed,
-                      "head": current["head"]}, 0)
-
-    arming = cursor.get("fingerprint") is None
-    if arming:
-        cursor.update(fingerprint=current, last_activity_at=now)
-    elif not args.reset:
-        # --reset-backoff holds this tick at the floor it just set; every
-        # other quiet tick widens the gap by one step.
-        cursor["step"] += 1
-
-    delay = backoff_delay(cursor["step"], random.uniform(-1, 1))
-    watch_state.save(args.repo, args.pr, cursor, args.state_dir)
-    payload = {"event": "waiting", "next_tick_in_s": delay,
-               "quiet_s": watch_state.elapsed_s(cursor["last_activity_at"], now)}
-    if arming:
-        payload["armed"] = True
-    return _emit(payload, 1)
+        payload = {"event": "waiting", "next_tick_in_s": delay,
+                   "quiet_s": watch_state.elapsed_s(cursor["last_activity_at"], now)}
+        if arming:
+            payload["armed"] = True
+        return _emit(payload, 1)
+    except Exception as err:  # noqa: BLE001 - main() must always emit JSON
+        # main() is the only impure shell in this module: whatever goes
+        # wrong -- a null `pullRequest` in the GraphQL response, a
+        # malformed --repo, anything unforeseen -- must still produce
+        # exactly one JSON object on stdout and exit 2 (the documented
+        # hard-error code), never escape uncaught. An uncaught exception
+        # here reproduces the exact stall this rewrite exists to
+        # eliminate: exit 1 with no output, which the driver reads as "no
+        # activity yet" and then crashes on the absent next_tick_in_s.
+        # gh.GhError is already handled above and never reaches here.
+        return _emit({"event": "error", "detail": str(err) or repr(err)}, 2)
 
 
 if __name__ == "__main__":

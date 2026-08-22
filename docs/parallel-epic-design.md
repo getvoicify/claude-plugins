@@ -300,6 +300,11 @@ One blocking poller covering, in a single loop keyed on the PR's head SHA: check
 suite conclusions, the `claude-review` check and formal review state, CodeRabbit
 review state, Copilot review state, and review-thread resolution.
 
+> **Superseded.** The `--await`/`--deadline` vocabulary and `snapshot()` described
+> below were replaced by the tick model in `docs/durable-pr-watch-design.md`.
+> `pr_watch.py` no longer blocks, awaits keys, or parks on a deadline; this
+> passage is kept for historical context only.
+
 **The `--await` vocabulary is exactly `snapshot()`'s keys** — `head`, `checks`,
 `threads_unresolved`, or a review-author **login** (e.g. `coderabbitai`,
 `copilot-pull-request-reviewer`, or a human's GitHub username) — never a check

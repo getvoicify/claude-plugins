@@ -76,7 +76,16 @@ def _now():
 
 
 def _load_cursors(children):
-    """Watch cursors for every child with an open PR, keyed by child number."""
+    """Watch cursors for every child with an open PR, keyed by child number.
+
+    This always resolves the cursor directory via `watch_state.state_dir`'s
+    own default lookup (`EPIC_WATCH_DIR`, else `~/.cache/epic/watch`) — there
+    is no `--state-dir`-equivalent override here. A driver that runs
+    `pr_watch.py --state-dir <custom>` writes cursors somewhere this
+    function will never look, so `watches[]` comes back silently empty
+    rather than erroring. Such a driver MUST set `EPIC_WATCH_DIR` to that
+    same directory for the silence report to see anything.
+    """
     cursors = {}
     for child in children or []:
         pr = child.get("pr") or {}
