@@ -2753,6 +2753,27 @@ def test_new_comment_moves_the_comments_facet():
     assert changed_facets(before, after) == ["comments"]
 
 
+def test_edited_comment_moves_the_comments_facet():
+    """Edited comment (same id, different body) is detected."""
+    before = pr_fingerprint(_pr(comments=[{"id": "c1", "body": "looks good"}]), [])
+    after = pr_fingerprint(_pr(comments=[{"id": "c1", "body": "actually, blocks merge"}]), [])
+    assert changed_facets(before, after) == ["comments"]
+
+
+def test_deleted_comment_moves_the_comments_facet():
+    """Deleted comment is detected."""
+    before = pr_fingerprint(_pr(comments=[{"id": "c1", "body": "nit"}]), [])
+    after = pr_fingerprint(_pr(comments=[]), [])
+    assert changed_facets(before, after) == ["comments"]
+
+
+def test_changed_facets_with_empty_dict_prev_reports_changes():
+    """Empty dict is a valid fingerprint; only None means arming."""
+    before = {}
+    after = pr_fingerprint(_pr(), [])
+    assert changed_facets(before, after) == list(FACETS)
+
+
 def test_author_may_be_a_plain_string():
     """Some gh payloads flatten author to a login string."""
     a = pr_fingerprint(_pr(reviews=[{"author": "octocat", "state": "APPROVED",

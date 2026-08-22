@@ -99,13 +99,15 @@ def fingerprint(pr, threads):
         "threads": _digest(
             (t.get("id"), bool(t.get("isResolved"))) for t in threads or []
         ),
-        "comments": len(pr.get("comments") or []),
+        "comments": _digest(
+            (c.get("id"), c.get("body")) for c in pr.get("comments") or []
+        ),
     }
 
 
 def changed_facets(prev, curr):
     """Facet names that moved, in FACETS order. Arming is never activity."""
-    if not prev:
+    if prev is None:
         return []
     return [f for f in FACETS if prev.get(f) != curr.get(f)]
 
