@@ -73,10 +73,22 @@ def clear(repo, pr, override=None):
 
 
 def elapsed_s(then_iso, now_iso):
-    """Whole seconds between two ISO-8601 stamps; 0 when `then` is unset."""
+    """Whole seconds between two ISO-8601 stamps.
+
+    0 when `then` is unset, when either stamp is unparseable (malformed
+    string, naive/aware mismatch, wrong type), or when the delta comes out
+    negative (a `then` in the future, or a clock that moved backwards).
+    Never raises — a corrupt cursor can never take down a live run, the
+    same invariant this module's own docstring states for a missing or
+    unreadable cursor file.
+    """
     if not then_iso:
         return 0
-    return int((_parse(now_iso) - _parse(then_iso)).total_seconds())
+    try:
+        delta = (_parse(now_iso) - _parse(then_iso)).total_seconds()
+    except (TypeError, ValueError, AttributeError):
+        return 0
+    return max(0, int(delta))
 
 
 def _is_valid_type(key, value):

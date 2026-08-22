@@ -2162,6 +2162,32 @@ def test_elapsed_s_returns_zero_when_there_is_no_prior_stamp():
     assert watch_state.elapsed_s(None, "2026-08-22T10:00:00Z") == 0
 
 
+# CARRIED from Task 6's review: `elapsed_s` must never raise, no matter how
+# corrupt the stamp. `watch_state.load`'s type filter only checks that
+# `last_activity_at` is a str (or None) — it does not validate that the
+# string is a well-formed, timezone-aware ISO stamp. A value that survives
+# that filter (a naive stamp, or outright garbage) must not crash either
+# caller (`status.watch_report` or `pr_watch.main`'s "waiting" branch).
+def test_elapsed_s_returns_zero_for_a_naive_timestamp():
+    assert watch_state.elapsed_s(
+        "2026-08-22T10:13:00", "2026-08-22T11:00:00+00:00"
+    ) == 0
+
+
+def test_elapsed_s_returns_zero_for_a_garbage_string():
+    assert watch_state.elapsed_s("not-a-date", "2026-08-22T11:00:00+00:00") == 0
+
+
+def test_elapsed_s_returns_zero_for_wrong_type():
+    assert watch_state.elapsed_s(12345, "2026-08-22T11:00:00+00:00") == 0
+
+
+def test_elapsed_s_clamps_a_backwards_clock_to_zero():
+    assert watch_state.elapsed_s(
+        "2026-08-22T11:00:00+00:00", "2026-08-22T10:00:00+00:00"
+    ) == 0
+
+
 def test_load_rejects_wrong_type_for_step_and_keeps_defaults(tmp_path):
     """A wrong-typed step falls back to 0 while a valid sibling key is adopted."""
     (tmp_path / "o__n__7.json").write_text('{"step": "not an int", "errors": 5}')
@@ -2808,3 +2834,84 @@ def test_status_cli_includes_the_watch_report(tmp_path, monkeypatch, capsys):
     assert payload["watches"] == [
         {"child": 12, "pr": 34, "quiet_s": 2820, "last_activity": ["checks"]}
     ]
+
+
+# --- Task 6 review fixes: a corrupt cursor can never take down a live run --
+
+def test_status_cli_survives_a_corrupt_cursor_for_one_child(tmp_path, monkeypatch, capsys):
+    """Finding 1 (Task 6 review): `epic/scripts/status.py` called
+    `watch_state.elapsed_s` unguarded, so a `last_activity_at` that survived
+    `watch_state.load`'s type filter but wasn't a valid aware ISO stamp (a
+    naive stamp, here) raised out of `main()` and took `complete`/`drift`/
+    `sweep_plan` down with it. Now that `elapsed_s` itself never raises,
+    `main()` keeps reporting everything else correctly and the affected
+    watch reports `quiet_s: 0` instead of crashing the whole payload."""
+    import status
+
+    children = [{"number": 12, "state": "CLOSED", "repo": "o/n", "status": "Done",
+                 "pr": {"state": "OPEN", "number": 34}, "branch": "feat/12"}]
+    monkeypatch.setattr(status, "_fetch",
+                        lambda repo, epic: (children, {"state": "OPEN", "status": None}))
+    monkeypatch.setattr(status, "_now", lambda: _NOW)
+    monkeypatch.setenv("EPIC_WATCH_DIR", str(tmp_path))
+    watch_state.save("o/n", 34, {
+        "fingerprint": {"head": "a"}, "step": 4, "errors": 0,
+        "last_activity_at": "2026-08-22T10:13:00", "last_changed": ["checks"],
+    }, str(tmp_path))
+
+    code = status.main(["--epic", "1", "--repo", "o/n"])
+    payload = json.loads(capsys.readouterr().out)
+    assert code == 0
+    assert payload["complete"] is True
+    assert payload["drift"] == []
+    assert payload["sweep_plan"] == []
+    assert payload["watches"] == [
+        {"child": 12, "pr": 34, "quiet_s": 0, "last_activity": ["checks"]}
+    ]
+
+
+def test_a_corrupt_last_activity_at_does_not_crash_the_tick(tmp_path, monkeypatch, capsys):
+    """Finding 1 (Task 6 review): the same unguarded `elapsed_s` call sits in
+    `pr_watch.py`'s "waiting" branch too. A naive `last_activity_at` that
+    survives `watch_state.load`'s type filter used to raise out of main(),
+    which exits with a traceback and NO JSON on stdout — precisely the
+    no-output stall this whole rewrite exists to eliminate. The tick must
+    still emit its JSON and its normal exit code."""
+    watch_state.save("o/n", 7, {
+        "fingerprint": pr_fingerprint(_pr(), []), "step": 0, "errors": 0,
+        "last_activity_at": "2026-08-22T10:13:00", "last_changed": [],
+    }, str(tmp_path))
+    _install_tick(monkeypatch, _pr(), [])
+    code = _pw.main(["--repo", "o/n", "--pr", "7", "--state-dir", str(tmp_path)])
+    event = json.loads(capsys.readouterr().out)
+    assert code == 1
+    assert event["event"] == "waiting"
+    assert event["quiet_s"] == 0
+
+
+def test_fetch_carries_the_pr_number_alongside_state(monkeypatch):
+    """Finding 2 (Task 6 review, Minor): `_fetch` grew `pr["number"]`
+    alongside `pr["state"]` so `watch_report` can name the PR, but nothing
+    pinned it — the CLI test monkeypatches `_fetch` away entirely, and the
+    pre-existing `_fetch` tests only assert on `sweep_plan`. Revert the
+    `"number"` key and this is the only test that catches it."""
+    from status import _fetch
+
+    data = {
+        "repository": {"issue": {
+            "state": "OPEN",
+            "projectItems": {"nodes": []},
+            "subIssues": {"nodes": [
+                {"number": 12, "state": "OPEN", "projectItems": {"nodes": []}},
+            ]},
+        }}
+    }
+    pr_map = {"repository": {"pullRequests": {"nodes": [
+        {"number": 34, "state": "OPEN", "headRefName": "feat/12",
+         "closingIssuesReferences": {"nodes": [{"number": 12}]}},
+    ]}}}
+    responses = iter([data, pr_map])
+    monkeypatch.setattr(gh_module, "graphql", lambda query, **kw: next(responses))
+
+    children, _ = _fetch("acme/planning", 42)
+    assert children[0]["pr"] == {"state": "OPEN", "number": 34}
