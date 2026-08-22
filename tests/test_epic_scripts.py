@@ -2662,11 +2662,26 @@ def test_a_secondary_rate_limit_waits_exactly_as_long_as_github_asks(
     assert json.loads(capsys.readouterr().out)["next_tick_in_s"] == 47
 
 
+def test_gh_error_jitter_flows_into_error_backoff(tmp_path, monkeypatch, capsys):
+    """main() must pass main()'s drawn jitter into error_backoff as the
+    fourth (jitter) positional argument, not swap it with now_epoch or drop
+    it. Retry-After: 47 with jitter pinned to +1.0 (full positive spread on
+    the positive-only branch) must land at exactly 47 * 1.2 == 56 -- any
+    other wiring of the call (argument omitted, or swapped with
+    int(time.time())) produces a different number."""
+    _failing_fetch(monkeypatch, "HTTP 403: secondary rate limit\nRetry-After: 47")
+    monkeypatch.setattr(_pw.random, "uniform", lambda lo, hi: 1.0)
+    _pw.main(["--repo", "o/n", "--pr", "7", "--state-dir", str(tmp_path)])
+    assert json.loads(capsys.readouterr().out)["next_tick_in_s"] == 56
+
+
 def test_a_successful_tick_clears_the_error_count(tmp_path, monkeypatch, capsys):
     args = ["--repo", "o/n", "--pr", "7", "--state-dir", str(tmp_path)]
     _failing_fetch(monkeypatch, "HTTP 502: Bad Gateway")
     _pw.main(args)
     _pw.main(args)
+    capsys.readouterr()
+    assert watch_state.load("o/n", 7, str(tmp_path))["errors"] == 2
     _install_tick(monkeypatch, _pr(), [])
     _pw.main(args)
     capsys.readouterr()
