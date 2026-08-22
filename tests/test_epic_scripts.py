@@ -2796,3 +2796,72 @@ def test_changed_facets_is_empty_when_nothing_moved():
 def test_changed_facets_is_empty_when_there_is_no_previous_fingerprint():
     """Arming a watch is not activity."""
     assert changed_facets(None, pr_fingerprint(_pr(), [])) == []
+
+
+# --- pr_watch.py: exponential jittered backoff ----------------------------
+# Jitter is injected, not drawn, so the pure function stays deterministic
+# under test and main() owns the randomness. Desynchronising parallel wave
+# members is the whole point: the old 15/30/60 staircase had every child in
+# the wave polling in lockstep.
+
+from pr_watch import (
+    WATCH_CEIL_S,
+    WATCH_FLOOR_S,
+    backoff_delay,
+    error_backoff,
+)
+
+
+def test_backoff_delay_grows_exponentially_to_a_ceiling():
+    assert [backoff_delay(s) for s in range(8)] == [15, 27, 49, 87, 157, 283, 510, 900]
+
+
+def test_backoff_delay_stays_at_the_ceiling_forever():
+    assert backoff_delay(50) == WATCH_CEIL_S
+    assert backoff_delay(5000) == WATCH_CEIL_S
+
+
+def test_backoff_delay_starts_at_the_floor():
+    assert backoff_delay(0) == WATCH_FLOOR_S
+
+
+def test_negative_steps_clamp_to_the_floor():
+    assert backoff_delay(-3) == WATCH_FLOOR_S
+
+
+def test_jitter_spans_plus_or_minus_twenty_percent():
+    assert backoff_delay(7, -1.0) == 720
+    assert backoff_delay(7, 1.0) == 1080
+    assert backoff_delay(7, 0.0) == 900
+
+
+def test_delay_is_never_below_one_second():
+    assert backoff_delay(0, -1.0) >= 1
+
+
+def test_error_backoff_honours_retry_after():
+    stderr = "HTTP 403: You have exceeded a secondary rate limit\nRetry-After: 47"
+    assert error_backoff(1, stderr) == 47
+
+
+def test_error_backoff_caps_retry_after_at_the_ceiling():
+    assert error_backoff(1, "Retry-After: 99999") == WATCH_CEIL_S
+
+
+def test_error_backoff_honours_ratelimit_reset_as_an_absolute_epoch():
+    stderr = "HTTP 403: rate limit exceeded\nx-ratelimit-reset: 1000300"
+    assert error_backoff(1, stderr, now_epoch=1000000) == 300
+
+
+def test_error_backoff_ignores_an_already_past_ratelimit_reset():
+    stderr = "x-ratelimit-reset: 900"
+    assert error_backoff(0, stderr, now_epoch=1000) == 1
+
+
+def test_error_backoff_falls_back_to_the_exponential_ladder():
+    assert error_backoff(3, "HTTP 502: Bad Gateway") == backoff_delay(3)
+
+
+def test_error_backoff_tolerates_empty_stderr():
+    assert error_backoff(2, "") == backoff_delay(2)
+    assert error_backoff(2, None) == backoff_delay(2)

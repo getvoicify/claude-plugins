@@ -2,12 +2,55 @@
 import argparse
 import hashlib
 import json
+import re
 import time
 
 import gh
 
 _PASSING = {"SUCCESS", "NEUTRAL", "SKIPPED"}
 _SETTLED_STATES = {"SUCCESS", "FAILURE", "NONE", "APPROVED", "CHANGES_REQUESTED", "DISMISSED"}
+
+WATCH_FLOOR_S = 15
+WATCH_MULT = 1.8
+WATCH_CEIL_S = 900
+_JITTER = 0.2
+
+_RETRY_AFTER_RE = re.compile(r"retry[- ]after:?\s*(\d+)", re.I)
+_RATELIMIT_RESET_RE = re.compile(r"x-ratelimit-reset:?\s*(\d+)", re.I)
+
+
+def backoff_delay(step, jitter=0.0):
+    """Seconds until the next tick.
+
+    `jitter` is supplied by the caller (in [-1.0, 1.0]) rather than drawn
+    here, so this stays pure and deterministic under test. main() passes
+    random.uniform(-1, 1); the resulting spread desynchronises the parallel
+    wave members that the old fixed staircase kept in lockstep.
+    """
+    step = max(0, step)
+    try:
+        base = WATCH_FLOOR_S * (WATCH_MULT ** step)
+    except OverflowError:
+        base = WATCH_CEIL_S
+    base = min(base, WATCH_CEIL_S)
+    return max(1, round(base * (1 + _JITTER * jitter)))
+
+
+def error_backoff(errors, stderr, now_epoch=None):
+    """Seconds to wait after a failed `gh` call.
+
+    GitHub's own guidance wins when it gives any: an explicit `Retry-After`,
+    then an `x-ratelimit-reset` epoch. Otherwise fall back to the same
+    exponential ladder as a quiet tick.
+    """
+    text = stderr or ""
+    match = _RETRY_AFTER_RE.search(text)
+    if match:
+        return max(1, min(int(match.group(1)), WATCH_CEIL_S))
+    match = _RATELIMIT_RESET_RE.search(text)
+    if match and now_epoch is not None:
+        return max(1, min(int(match.group(1)) - int(now_epoch), WATCH_CEIL_S))
+    return backoff_delay(errors)
 
 
 def snapshot(pr, threads):
