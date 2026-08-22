@@ -2658,3 +2658,120 @@ def test_load_rejects_wrong_type_for_last_activity_at_falls_back_to_none(tmp_pat
     (tmp_path / "o__n__7.json").write_text('{"last_activity_at": 123}')
     loaded = watch_state.load("o/n", 7, str(tmp_path))
     assert loaded["last_activity_at"] is None
+
+
+# --- pr_watch.py: the activity fingerprint --------------------------------
+# The watcher is a dumb change-detector; mergeability.py remains the sole
+# authority on what is actionable. So the fingerprint must move on ANY
+# observable PR activity — most importantly a COMMENTED review, which is
+# what CodeRabbit and Copilot actually post and which the old snapshot()
+# deliberately dropped.
+
+from pr_watch import FACETS, changed_facets
+from pr_watch import fingerprint as pr_fingerprint
+
+
+def _pr(**over):
+    base = {
+        "headRefOid": "a1b2c3",
+        "state": "OPEN",
+        "statusCheckRollup": [{"name": "ci", "status": "IN_PROGRESS", "conclusion": None}],
+        "reviews": [],
+        "comments": [],
+    }
+    base.update(over)
+    return base
+
+
+def test_fingerprint_is_stable_for_identical_input():
+    assert pr_fingerprint(_pr(), []) == pr_fingerprint(_pr(), [])
+
+
+def test_fingerprint_covers_every_facet():
+    assert set(pr_fingerprint(_pr(), [])) == set(FACETS)
+
+
+def test_fingerprint_ignores_rollup_ordering():
+    a = _pr(statusCheckRollup=[{"name": "ci"}, {"name": "lint"}])
+    b = _pr(statusCheckRollup=[{"name": "lint"}, {"name": "ci"}])
+    assert pr_fingerprint(a, [])["checks"] == pr_fingerprint(b, [])["checks"]
+
+
+def test_commented_review_moves_the_fingerprint():
+    """REGRESSION: the CodeRabbit stall.
+
+    The old snapshot() skipped COMMENTED reviews, so `--await coderabbitai`
+    waited out the full deadline and parked the child even though the
+    review had landed. CodeRabbit and Copilot post COMMENTED, never
+    APPROVED/CHANGES_REQUESTED, so this is the common case, not an edge one.
+    """
+    before = pr_fingerprint(_pr(), [])
+    after = pr_fingerprint(
+        _pr(reviews=[{
+            "author": {"login": "coderabbitai"},
+            "state": "COMMENTED",
+            "submittedAt": "2026-08-22T10:00:00Z",
+        }]),
+        [],
+    )
+    assert changed_facets(before, after) == ["reviews"]
+
+
+def test_head_change_is_detected():
+    assert changed_facets(pr_fingerprint(_pr(), []),
+                          pr_fingerprint(_pr(headRefOid="zzz"), [])) == ["head"]
+
+
+def test_check_conclusion_change_is_detected():
+    before = pr_fingerprint(_pr(), [])
+    after = pr_fingerprint(
+        _pr(statusCheckRollup=[{"name": "ci", "status": "COMPLETED",
+                                "conclusion": "SUCCESS"}]),
+        [],
+    )
+    assert changed_facets(before, after) == ["checks"]
+
+
+def test_legacy_status_context_shape_is_fingerprinted():
+    """StatusContext entries carry `context`/`state`, not `name`/`status`."""
+    before = pr_fingerprint(_pr(statusCheckRollup=[{"context": "cov", "state": "PENDING"}]), [])
+    after = pr_fingerprint(_pr(statusCheckRollup=[{"context": "cov", "state": "SUCCESS"}]), [])
+    assert changed_facets(before, after) == ["checks"]
+
+
+def test_new_thread_and_thread_resolution_both_move_threads():
+    empty = pr_fingerprint(_pr(), [])
+    opened = pr_fingerprint(_pr(), [{"id": "t1", "isResolved": False}])
+    resolved = pr_fingerprint(_pr(), [{"id": "t1", "isResolved": True}])
+    assert changed_facets(empty, opened) == ["threads"]
+    assert changed_facets(opened, resolved) == ["threads"]
+
+
+def test_new_comment_moves_the_comments_facet():
+    before = pr_fingerprint(_pr(), [])
+    after = pr_fingerprint(_pr(comments=[{"id": "c1"}]), [])
+    assert changed_facets(before, after) == ["comments"]
+
+
+def test_author_may_be_a_plain_string():
+    """Some gh payloads flatten author to a login string."""
+    a = pr_fingerprint(_pr(reviews=[{"author": "octocat", "state": "APPROVED",
+                                  "submittedAt": "2026-08-22T10:00:00Z"}]), [])
+    b = pr_fingerprint(_pr(reviews=[{"author": {"login": "octocat"}, "state": "APPROVED",
+                                  "submittedAt": "2026-08-22T10:00:00Z"}]), [])
+    assert a["reviews"] == b["reviews"]
+
+
+def test_changed_facets_reports_multiple_moves_in_facet_order():
+    before = pr_fingerprint(_pr(), [])
+    after = pr_fingerprint(_pr(headRefOid="zzz", comments=[{"id": "c1"}]), [])
+    assert changed_facets(before, after) == ["head", "comments"]
+
+
+def test_changed_facets_is_empty_when_nothing_moved():
+    assert changed_facets(pr_fingerprint(_pr(), []), pr_fingerprint(_pr(), [])) == []
+
+
+def test_changed_facets_is_empty_when_there_is_no_previous_fingerprint():
+    """Arming a watch is not activity."""
+    assert changed_facets(None, pr_fingerprint(_pr(), [])) == []

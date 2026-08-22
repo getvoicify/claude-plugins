@@ -1,5 +1,6 @@
 """Responsive PR/workflow monitoring. Pure core; only main() sleeps."""
 import argparse
+import hashlib
 import json
 import time
 
@@ -70,6 +71,54 @@ def snapshot(pr, threads):
         1 for t in threads or [] if not t.get("isResolved")
     )
     return snap
+
+
+FACETS = ("head", "checks", "reviews", "threads", "comments")
+
+
+def fingerprint(pr, threads):
+    """Per-facet digests of everything worth waking on.
+
+    Deliberately records EVERY review, COMMENTED included: CodeRabbit and
+    Copilot post COMMENTED reviews with inline threads and never a formal
+    verdict, so dropping them is what made the old watcher blind to the
+    reviews it was most often waiting for.
+    """
+    return {
+        "head": pr.get("headRefOid"),
+        "checks": _digest(
+            (c.get("name") or c.get("context"),
+             c.get("status") or c.get("state"),
+             c.get("conclusion"))
+            for c in pr.get("statusCheckRollup") or []
+        ),
+        "reviews": _digest(
+            (_login(r.get("author")), r.get("state"), r.get("submittedAt"))
+            for r in pr.get("reviews") or []
+        ),
+        "threads": _digest(
+            (t.get("id"), bool(t.get("isResolved"))) for t in threads or []
+        ),
+        "comments": len(pr.get("comments") or []),
+    }
+
+
+def changed_facets(prev, curr):
+    """Facet names that moved, in FACETS order. Arming is never activity."""
+    if not prev:
+        return []
+    return [f for f in FACETS if prev.get(f) != curr.get(f)]
+
+
+def _digest(rows):
+    """Order-independent digest of a set of tuples."""
+    ordered = sorted(rows, key=lambda row: [str(v) for v in row])
+    payload = json.dumps(ordered, sort_keys=True, default=str)
+    return hashlib.sha256(payload.encode()).hexdigest()[:16]
+
+
+def _login(author):
+    return author.get("login") if isinstance(author, dict) else author
 
 
 def diff_event(prev, curr, awaited):
