@@ -2570,6 +2570,7 @@ def test_reset_backoff_forces_the_floor(tmp_path, monkeypatch, capsys):
     capsys.readouterr()
     _pw.main(args + ["--reset-backoff"])
     assert json.loads(capsys.readouterr().out)["next_tick_in_s"] == 15
+    assert watch_state.load("o/n", 7, str(tmp_path))["step"] == 0
 
 
 def test_resume_backoff_continues_from_the_stored_step(tmp_path, monkeypatch, capsys):
@@ -2618,3 +2619,103 @@ def test_the_tick_never_sleeps(tmp_path, monkeypatch, capsys):
         raising=False,
     )
     _pw.main(["--repo", "o/n", "--pr", "7", "--state-dir", str(tmp_path)])
+
+
+# --- pr_watch.py: a flaky gh must not end the watch -----------------------
+# A transient 502 or a secondary rate limit is a reason to wait longer, not
+# a reason to abandon a PR. Only a sustained outage (8 consecutive
+# failures) is fatal.
+
+def _failing_fetch(monkeypatch, stderr, now="2026-08-22T10:00:00+00:00"):
+    def boom(repo, number):
+        raise gh.GhError(1, stderr)
+    monkeypatch.setattr(_pw, "_fetch", boom)
+    monkeypatch.setattr(_pw, "_now", lambda: now)
+    monkeypatch.setattr(_pw.random, "uniform", lambda lo, hi: 0.0)
+
+
+def test_a_transient_gh_error_asks_for_another_tick(tmp_path, monkeypatch, capsys):
+    _failing_fetch(monkeypatch, "HTTP 502: Bad Gateway")
+    code = _pw.main(["--repo", "o/n", "--pr", "7", "--state-dir", str(tmp_path)])
+    event = json.loads(capsys.readouterr().out)
+    assert code == 1
+    assert event["event"] == "waiting"
+    assert event["reason"] == "gh-error"
+    assert event["consecutive_errors"] == 1
+
+
+def test_consecutive_errors_accumulate_across_ticks(tmp_path, monkeypatch, capsys):
+    _failing_fetch(monkeypatch, "HTTP 502: Bad Gateway")
+    args = ["--repo", "o/n", "--pr", "7", "--state-dir", str(tmp_path)]
+    _pw.main(args)
+    _pw.main(args)
+    capsys.readouterr()
+    _pw.main(args)
+    assert json.loads(capsys.readouterr().out)["consecutive_errors"] == 3
+
+
+def test_a_secondary_rate_limit_waits_exactly_as_long_as_github_asks(
+    tmp_path, monkeypatch, capsys
+):
+    _failing_fetch(monkeypatch, "HTTP 403: secondary rate limit\nRetry-After: 47")
+    _pw.main(["--repo", "o/n", "--pr", "7", "--state-dir", str(tmp_path)])
+    assert json.loads(capsys.readouterr().out)["next_tick_in_s"] == 47
+
+
+def test_a_successful_tick_clears_the_error_count(tmp_path, monkeypatch, capsys):
+    args = ["--repo", "o/n", "--pr", "7", "--state-dir", str(tmp_path)]
+    _failing_fetch(monkeypatch, "HTTP 502: Bad Gateway")
+    _pw.main(args)
+    _pw.main(args)
+    _install_tick(monkeypatch, _pr(), [])
+    _pw.main(args)
+    capsys.readouterr()
+    assert watch_state.load("o/n", 7, str(tmp_path))["errors"] == 0
+
+
+def test_a_sustained_outage_is_finally_fatal(tmp_path, monkeypatch, capsys):
+    _failing_fetch(monkeypatch, "HTTP 502: Bad Gateway")
+    args = ["--repo", "o/n", "--pr", "7", "--state-dir", str(tmp_path)]
+    for _ in range(_pw._MAX_ERRORS - 1):
+        assert _pw.main(args) == 1
+    capsys.readouterr()
+    code = _pw.main(args)
+    event = json.loads(capsys.readouterr().out)
+    assert code == 2
+    assert event["event"] == "error"
+    assert event["consecutive"] == _pw._MAX_ERRORS
+
+
+def test_stop_deletes_the_cursor(tmp_path, monkeypatch, capsys):
+    _install_tick(monkeypatch, _pr(), [])
+    args = ["--repo", "o/n", "--pr", "7", "--state-dir", str(tmp_path)]
+    _pw.main(args)
+    capsys.readouterr()
+    code = _pw.main(args + ["--stop"])
+    event = json.loads(capsys.readouterr().out)
+    assert code == 0
+    assert event["event"] == "stopped"
+    assert event["cursor_removed"] is True
+    assert not watch_state.cursor_path("o/n", 7, str(tmp_path)).exists()
+
+
+def test_stop_on_an_unwatched_pr_is_harmless(tmp_path, capsys):
+    code = _pw.main(["--repo", "o/n", "--pr", "9", "--state-dir", str(tmp_path), "--stop"])
+    assert code == 0
+    assert json.loads(capsys.readouterr().out)["cursor_removed"] is False
+
+
+def test_reset_backoff_persists_across_a_failed_fetch(tmp_path, monkeypatch, capsys):
+    """CARRIED from Task 4's review: main() applied --reset-backoff's
+    cursor["step"] = 0 in memory, but the old error branch returned without
+    saving, so the reset was silently lost if the fetch happened to fail."""
+    args = ["--repo", "o/n", "--pr", "7", "--state-dir", str(tmp_path)]
+    _install_tick(monkeypatch, _pr(), [])
+    _pw.main(args)
+    _pw.main(args)
+    _pw.main(args)                      # step is now 2
+    capsys.readouterr()
+    _failing_fetch(monkeypatch, "HTTP 502: Bad Gateway")
+    _pw.main(args + ["--reset-backoff"])
+    capsys.readouterr()
+    assert watch_state.load("o/n", 7, str(tmp_path))["step"] == 0

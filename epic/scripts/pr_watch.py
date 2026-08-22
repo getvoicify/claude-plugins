@@ -15,6 +15,7 @@ WATCH_FLOOR_S = 15
 WATCH_MULT = 1.8
 WATCH_CEIL_S = 900
 _JITTER = 0.2
+_MAX_ERRORS = 8
 
 _RETRY_AFTER_RE = re.compile(r"retry[- ]after:\s*(\d{1,10})", re.I)
 _RATELIMIT_RESET_RE = re.compile(r"x-ratelimit-reset:\s*(\d{1,10})", re.I)
@@ -115,8 +116,6 @@ def _login(author):
     return author.get("login") if isinstance(author, dict) else author
 
 
-_MAX_ERRORS = 8
-
 _PR_FIELDS = "headRefOid,state,statusCheckRollup,reviews,comments"
 
 _THREADS_QUERY = """
@@ -163,8 +162,12 @@ def main(argv=None):
     group = parser.add_mutually_exclusive_group()
     group.add_argument("--reset-backoff", dest="reset", action="store_true",
                        help="force the backoff back to the floor (use after a push)")
+    # --resume-backoff is deliberately inert: `args.resume` is never read.
+    # Resuming from the stored step is already the default behaviour when
+    # neither flag is passed; this flag exists only so a caller can state
+    # that intent explicitly, for readability at the call site.
     group.add_argument("--resume-backoff", dest="resume", action="store_true",
-                       help="continue from the stored step (the default; asserts intent)")
+                       help="continue from the stored step (the default; asserts intent, no-op)")
     args = parser.parse_args(argv)
 
     if args.stop:
@@ -178,7 +181,20 @@ def main(argv=None):
     try:
         pr, threads = _fetch(args.repo, args.pr)
     except gh.GhError as err:
-        return _emit({"event": "error", "detail": err.stderr or str(err)}, 2)
+        detail = err.stderr or str(err)
+        cursor["errors"] += 1
+        watch_state.save(args.repo, args.pr, cursor, args.state_dir)
+        if cursor["errors"] >= _MAX_ERRORS:
+            return _emit({"event": "error", "detail": detail,
+                          "consecutive": cursor["errors"]}, 2)
+        return _emit({"event": "waiting",
+                      "next_tick_in_s": error_backoff(cursor["errors"], detail,
+                                                      int(time.time()),
+                                                      random.uniform(-1, 1)),
+                      "reason": "gh-error",
+                      "consecutive_errors": cursor["errors"]}, 1)
+
+    cursor["errors"] = 0
 
     state = pr.get("state")
     if state and state != "OPEN":
