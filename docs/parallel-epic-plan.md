@@ -1521,6 +1521,10 @@ def backoff(elapsed):
 Run: `pytest tests/test_epic_scripts.py -q`
 Expected: all passed
 
+> **Superseded.** The `--await`/`--deadline` CLI shell built in this step (and
+> the blocking `main()` it produces) was replaced by the tick model in
+> `docs/durable-pr-watch-design.md`. Kept for historical context only.
+
 - [ ] **Step 5: Add the CLI shell**
 
 Append to `epic/scripts/pr_watch.py`:

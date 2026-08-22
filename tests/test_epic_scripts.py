@@ -764,454 +764,6 @@ def test_parse_claims_none():
     assert parse_claims(None) == []
 
 
-# Task 10: pr_watch — responsive PR monitoring
-
-from pr_watch import backoff, diff_event, snapshot
-
-
-def test_snapshot_records_head_and_check_states():
-    pr = {
-        "headRefOid": "a1b2c3",
-        "statusCheckRollup": [
-            {"name": "unit", "status": "COMPLETED", "conclusion": "SUCCESS"}
-        ],
-        "reviews": [],
-    }
-    snap = snapshot(pr, [])
-    assert snap["head"] == "a1b2c3"
-    assert snap["checks"] == "SUCCESS"
-
-
-def test_snapshot_checks_pending_when_any_incomplete():
-    pr = {
-        "headRefOid": "a1b2c3",
-        "statusCheckRollup": [
-            {"name": "unit", "status": "COMPLETED", "conclusion": "SUCCESS"},
-            {"name": "lint", "status": "IN_PROGRESS", "conclusion": None},
-        ],
-        "reviews": [],
-    }
-    assert snapshot(pr, [])["checks"] == "PENDING"
-
-
-def test_snapshot_records_latest_review_state_per_author():
-    pr = {
-        "headRefOid": "a1b2c3",
-        "statusCheckRollup": [],
-        "reviews": [
-            {"author": "coderabbitai", "state": "COMMENTED",
-             "submittedAt": "2026-08-17T09:00:00Z"},
-            {"author": "coderabbitai", "state": "APPROVED",
-             "submittedAt": "2026-08-17T10:00:00Z"},
-        ],
-    }
-    assert snapshot(pr, [])["coderabbitai"] == "APPROVED"
-
-
-def test_snapshot_counts_unresolved_threads():
-    pr = {"headRefOid": "a1b2c3", "statusCheckRollup": [], "reviews": []}
-    threads = [{"id": "T_1", "isResolved": False}, {"id": "T_2", "isResolved": True}]
-    assert snapshot(pr, threads)["threads_unresolved"] == 1
-
-
-def test_diff_event_returns_none_when_nothing_awaited_changed():
-    prev = {"head": "a1", "checks": "PENDING", "coderabbitai": "COMMENTED"}
-    curr = {"head": "a1", "checks": "PENDING", "coderabbitai": "APPROVED"}
-    assert diff_event(prev, curr, ["checks"]) is None
-
-
-def test_diff_event_reports_first_awaited_change():
-    prev = {"head": "a1", "checks": "PENDING"}
-    curr = {"head": "a1", "checks": "SUCCESS"}
-    event = diff_event(prev, curr, ["checks"])
-    assert event["event"] == "checks"
-    assert event["state"] == "SUCCESS"
-    assert event["head"] == "a1"
-
-
-def test_diff_event_reports_head_change_even_when_not_awaited():
-    prev = {"head": "a1", "checks": "PENDING"}
-    curr = {"head": "b2", "checks": "PENDING"}
-    assert diff_event(prev, curr, ["checks"])["event"] == "head-changed"
-
-
-def test_backoff_starts_fast_and_widens_to_a_ceiling():
-    assert backoff(0) == 15
-    assert backoff(120) == 30
-    assert backoff(600) == 60
-    assert backoff(86400) == 60
-
-
-# Finding 1: author shape + mixed check types
-
-def test_snapshot_author_as_dict_with_login():
-    """Author object with login key → snapshot uses login as dict key."""
-    pr = {
-        "headRefOid": "a1b2c3",
-        "statusCheckRollup": [],
-        "reviews": [
-            {"author": {"login": "coderabbitai"}, "state": "APPROVED",
-             "submittedAt": "2026-08-17T10:00:00Z"},
-        ],
-    }
-    snap = snapshot(pr, [])
-    assert snap["coderabbitai"] == "APPROVED"
-
-
-def test_snapshot_author_as_string_still_works():
-    """Backwards compat: string author still works (for fixtures)."""
-    pr = {
-        "headRefOid": "a1b2c3",
-        "statusCheckRollup": [],
-        "reviews": [
-            {"author": "coderabbitai", "state": "APPROVED",
-             "submittedAt": "2026-08-17T10:00:00Z"},
-        ],
-    }
-    snap = snapshot(pr, [])
-    assert snap["coderabbitai"] == "APPROVED"
-
-
-def test_snapshot_mixed_checks_handles_statuscontext():
-    """StatusContext (legacy) has 'state', CheckRun has 'status'."""
-    pr = {
-        "headRefOid": "a1b2c3",
-        "statusCheckRollup": [
-            {"context": "ci/travis", "state": "SUCCESS"},  # StatusContext
-            {"name": "unit", "status": "COMPLETED", "conclusion": "SUCCESS"}  # CheckRun
-        ],
-        "reviews": [],
-    }
-    snap = snapshot(pr, [])
-    assert snap["checks"] == "SUCCESS"
-
-
-def test_snapshot_mixed_checks_statuscontext_pending():
-    """StatusContext with state PENDING → checks PENDING."""
-    pr = {
-        "headRefOid": "a1b2c3",
-        "statusCheckRollup": [
-            {"context": "ci/travis", "state": "PENDING"},
-        ],
-        "reviews": [],
-    }
-    snap = snapshot(pr, [])
-    assert snap["checks"] == "PENDING"
-
-
-def test_snapshot_mixed_checks_statuscontext_failure():
-    """StatusContext with state FAILURE → checks FAILURE."""
-    pr = {
-        "headRefOid": "a1b2c3",
-        "statusCheckRollup": [
-            {"context": "ci/travis", "state": "FAILURE"},
-        ],
-        "reviews": [],
-    }
-    snap = snapshot(pr, [])
-    assert snap["checks"] == "FAILURE"
-
-
-# Finding 2: resilience to transient errors
-
-def test_main_resilience_survives_transient_errors_and_recovers(monkeypatch):
-    """Initial PENDING snapshot, _fetch fails twice then succeeds with change → returns 0 with event.
-
-    GUARDS: try/except around _fetch and counter reset on success.
-    WOULD FAIL if: try/except removed (first GhError propagates), or counter not reset (reaches 5 on retry).
-    """
-    from pr_watch import main
-
-    fetch_call_count = [0]
-
-    def fetching_snapshot(repo, pr_number):
-        fetch_call_count[0] += 1
-        if fetch_call_count[0] <= 2:
-            raise gh.GhError(502, "Bad Gateway")
-        # Third call: success with changed state
-        return {
-            "headRefOid": "a1b2c3",
-            "statusCheckRollup": [
-                {"name": "unit", "status": "COMPLETED", "conclusion": "SUCCESS"}
-            ],
-            "reviews": [],
-        }, []
-
-    # Initial snapshot: PENDING (not settled)
-    initial_call_count = [0]
-    def fetching_initial(repo, pr_number):
-        initial_call_count[0] += 1
-        if initial_call_count[0] == 1:
-            # Initial: PENDING so not settled, enters loop
-            return {
-                "headRefOid": "a1b2c3",
-                "statusCheckRollup": [
-                    {"name": "unit", "status": "IN_PROGRESS", "conclusion": None}
-                ],
-                "reviews": [],
-            }, []
-        return fetching_snapshot(repo, pr_number)
-
-    monkeypatch.setattr("pr_watch._fetch", fetching_initial)
-    monkeypatch.setattr("pr_watch.time.sleep", lambda x: None)
-
-    result = main(["--repo", "a/b", "--pr", "1", "--await", "checks", "--deadline", "10000"])
-    assert result == 0
-    assert fetch_call_count[0] >= 3  # Was called 3+ times
-
-
-def test_main_resilience_terminates_at_five_consecutive_failures(monkeypatch):
-    """Initial PENDING snapshot, _fetch fails permanently → returns 1 with error event at exactly 5 consecutive.
-
-    GUARDS: consecutive failure counter and 5-failure cap.
-    WOULD FAIL if: cap changed to 4, 6, or removed (infinite retries).
-    """
-    from pr_watch import main
-    import json
-    from io import StringIO
-
-    fetch_call_count = [0]
-
-    def always_fail(repo, pr_number):
-        fetch_call_count[0] += 1
-        raise gh.GhError(502, "Bad Gateway")
-
-    # Initial snapshot: PENDING
-    initial_call_count = [0]
-    def fetching_initial(repo, pr_number):
-        initial_call_count[0] += 1
-        if initial_call_count[0] == 1:
-            return {
-                "headRefOid": "a1b2c3",
-                "statusCheckRollup": [
-                    {"name": "unit", "status": "IN_PROGRESS", "conclusion": None}
-                ],
-                "reviews": [],
-            }, []
-        return always_fail(repo, pr_number)
-
-    monkeypatch.setattr("pr_watch._fetch", fetching_initial)
-    monkeypatch.setattr("pr_watch.time.sleep", lambda x: None)
-
-    # Capture stdout to check the error event
-    captured_output = []
-    monkeypatch.setattr("builtins.print", lambda x: captured_output.append(x))
-
-    result = main(["--repo", "a/b", "--pr", "1", "--await", "checks", "--deadline", "10000"])
-    assert result == 1
-    assert len(captured_output) == 1
-    event = json.loads(captured_output[0])
-    assert event["event"] == "error"
-    assert event["consecutive"] == 5  # Exactly 5
-
-
-def test_main_resilience_counter_resets_on_success(monkeypatch):
-    """Counter resets on success: 4 fails → success (no change) → 4 fails → success (change) → returns 0, no error event.
-
-    GUARDS: consecutive_errors = 0 on successful _fetch.
-    WOULD FAIL if: reset deleted → counter accumulates 4+4=8 (exceeds 5) → error event emitted, returns 1.
-    """
-    from pr_watch import main
-    import json
-
-    fetch_call_count = [0]
-    pending_snapshot = {
-        "headRefOid": "a1b2c3",
-        "statusCheckRollup": [
-            {"name": "unit", "status": "IN_PROGRESS", "conclusion": None}
-        ],
-        "reviews": [],
-    }
-    success_snapshot = {
-        "headRefOid": "a1b2c3",
-        "statusCheckRollup": [
-            {"name": "unit", "status": "COMPLETED", "conclusion": "SUCCESS"}
-        ],
-        "reviews": [],
-    }
-
-    def fetching_pattern(repo, pr_number):
-        fetch_call_count[0] += 1
-        # Call 1: initial PENDING (enters loop)
-        # Calls 2-5: fail (4 consecutive)
-        # Call 6: success, returns IDENTICAL PENDING (no change, no event, counter resets)
-        # Calls 7-10: fail (4 consecutive again)
-        # Call 11: success, returns SUCCESS (change, diff_event fires, returns 0)
-        if fetch_call_count[0] == 1:
-            return pending_snapshot, []
-        if fetch_call_count[0] in {2, 3, 4, 5}:
-            raise gh.GhError(502, "Bad Gateway")
-        if fetch_call_count[0] == 6:
-            # Success, but identical snapshot (no change)
-            return pending_snapshot, []
-        if fetch_call_count[0] in {7, 8, 9, 10}:
-            raise gh.GhError(502, "Bad Gateway")
-        if fetch_call_count[0] == 11:
-            # Success with real change
-            return success_snapshot, []
-        raise gh.GhError(502, "Should not reach")
-
-    monkeypatch.setattr("pr_watch._fetch", fetching_pattern)
-    monkeypatch.setattr("pr_watch.time.sleep", lambda x: None)
-
-    captured_output = []
-    monkeypatch.setattr("builtins.print", lambda x: captured_output.append(x))
-
-    result = main(["--repo", "a/b", "--pr", "1", "--await", "checks", "--deadline", "10000"])
-    assert result == 0
-    # Verify no error event was emitted (would have one if counter wasn't reset)
-    for output in captured_output:
-        event = json.loads(output)
-        assert event["event"] != "error", "Counter was not reset: error event should not have been emitted"
-
-
-# Finding 3: settled state detection
-
-from pr_watch import settled_event
-
-
-def test_settled_event_already_success():
-    """Awaited key already SUCCESS → return settled event."""
-    curr = {"head": "a1", "checks": "SUCCESS"}
-    event = settled_event(curr, ["checks"])
-    assert event is not None
-    assert event["event"] == "checks"
-    assert event["initial"] is True
-
-
-def test_settled_event_already_failure():
-    """Awaited key already FAILURE → return settled event."""
-    curr = {"head": "a1", "checks": "FAILURE"}
-    event = settled_event(curr, ["checks"])
-    assert event is not None
-    assert event["event"] == "checks"
-    assert event["initial"] is True
-
-
-def test_settled_event_pending_not_settled():
-    """Awaited key PENDING is not settled."""
-    curr = {"head": "a1", "checks": "PENDING"}
-    event = settled_event(curr, ["checks"])
-    assert event is None
-
-
-def test_settled_event_threads_zero_settled():
-    """threads_unresolved == 0 is settled."""
-    curr = {"head": "a1", "threads_unresolved": 0}
-    event = settled_event(curr, ["threads_unresolved"])
-    assert event is not None
-    assert event["initial"] is True
-
-
-def test_settled_event_threads_nonzero_not_settled():
-    """threads_unresolved > 0 is not settled."""
-    curr = {"head": "a1", "threads_unresolved": 2}
-    event = settled_event(curr, ["threads_unresolved"])
-    assert event is None
-
-
-def test_deadline_event_includes_snapshot(monkeypatch):
-    """Deadline exceeded → returns 1, event includes snapshot and awaited keys.
-
-    GUARDS: snapshot included in deadline event, event == "deadline", awaited preserved.
-    WOULD FAIL if: snapshot key removed, event type changed, or awaited list dropped.
-    """
-    from pr_watch import main
-    import json
-
-    # Mock time to jump past deadline immediately
-    time_sequence = [0, 1000]  # First call returns 0, second jumps to 1000
-    time_calls = [0]
-
-    def fake_monotonic():
-        result = time_sequence[time_calls[0]]
-        time_calls[0] += 1
-        return result
-
-    # Initial snapshot: PENDING (not settled)
-    def fetching_once(repo, pr_number):
-        return {
-            "headRefOid": "abc123",
-            "statusCheckRollup": [
-                {"name": "ci", "status": "IN_PROGRESS", "conclusion": None}
-            ],
-            "reviews": [
-                {"author": {"login": "bot"}, "state": "COMMENTED", "submittedAt": "2026-08-17T10:00:00Z"}
-            ],
-        }, []
-
-    monkeypatch.setattr("pr_watch._fetch", fetching_once)
-    monkeypatch.setattr("pr_watch.time.monotonic", fake_monotonic)
-    monkeypatch.setattr("pr_watch.time.sleep", lambda x: None)
-
-    captured_output = []
-    monkeypatch.setattr("builtins.print", lambda x: captured_output.append(x))
-
-    result = main(["--repo", "a/b", "--pr", "1", "--await", "checks", "--deadline", "100"])
-    assert result == 1
-    assert len(captured_output) == 1
-    event = json.loads(captured_output[0])
-    assert event["event"] == "deadline"
-    assert "snapshot" in event
-    assert event["snapshot"]["head"] == "abc123"
-    assert event["snapshot"]["checks"] == "PENDING"
-    assert event["awaited"] == ["checks"]
-
-
-# StatusContext unrecognized state should be PENDING (fail-open)
-
-def test_snapshot_statuscontext_unrecognized_state_is_pending():
-    """StatusContext with unrecognized state → checks PENDING (fail-open).
-
-    GUARDS: unrecognized states treated as pending, not passing.
-    WOULD FAIL if: unrecognized states fall through to "SUCCESS".
-    """
-    pr = {
-        "headRefOid": "a1b2c3",
-        "statusCheckRollup": [
-            {"context": "ci/unknown", "state": "QUEUED"},  # Unrecognized
-        ],
-        "reviews": [],
-    }
-    snap = snapshot(pr, [])
-    assert snap["checks"] == "PENDING"
-
-
-def test_snapshot_statuscontext_none_state_is_pending():
-    """StatusContext with state=None → checks PENDING.
-
-    GUARDS: None state treated as pending, not passing.
-    WOULD FAIL if: None state falls through to "SUCCESS".
-    """
-    pr = {
-        "headRefOid": "a1b2c3",
-        "statusCheckRollup": [
-            {"context": "ci/broken", "state": None},
-        ],
-        "reviews": [],
-    }
-    snap = snapshot(pr, [])
-    assert snap["checks"] == "PENDING"
-
-
-# Finding 4: skip COMMENTED reviews when folding
-
-def test_snapshot_skips_commented_review():
-    """COMMENTED review should not overwrite earlier APPROVED."""
-    pr = {
-        "headRefOid": "a1b2c3",
-        "statusCheckRollup": [],
-        "reviews": [
-            {"author": {"login": "reviewer"}, "state": "APPROVED",
-             "submittedAt": "2026-08-17T10:00:00Z"},
-            {"author": {"login": "reviewer"}, "state": "COMMENTED",
-             "submittedAt": "2026-08-17T11:00:00Z"},
-        ],
-    }
-    snap = snapshot(pr, [])
-    assert snap["reviewer"] == "APPROVED"
-
-
 # Task 11: status.py — drift, sweep plan, completion
 
 from status import drift, epic_complete, sweep_plan
@@ -2510,3 +2062,915 @@ def test_no_halt_while_a_child_is_in_flight_with_open_pr_still_passes():
     # after widening the condition to an OR.
     kids = [child(3, 0, pr={"number": 101, "state": "OPEN"})]
     assert halt_reason(kids, [], 3) is None
+
+
+# --- watch_state.py: the watch cursor -------------------------------------
+# The cursor is a pure optimisation: losing it costs one wasted fast-tier
+# poll and nothing else. Every "bad file" path below must therefore fall
+# back to DEFAULT_CURSOR rather than raise, or a corrupt cursor would take
+# down a live epic run.
+
+import watch_state
+
+
+def test_cursor_path_is_namespaced_by_repo_and_pr(tmp_path):
+    path = watch_state.cursor_path("getvoicify/claude-plugins", 12, str(tmp_path))
+    assert path == tmp_path / "getvoicify__claude-plugins__12.json"
+
+
+def test_load_returns_defaults_when_no_cursor_exists(tmp_path):
+    assert watch_state.load("o/n", 1, str(tmp_path)) == watch_state.DEFAULT_CURSOR
+
+
+def test_load_returns_a_copy_not_the_shared_default(tmp_path):
+    """Mutating one load must not poison the next one."""
+    first = watch_state.load("o/n", 1, str(tmp_path))
+    first["step"] = 99
+    assert watch_state.load("o/n", 1, str(tmp_path))["step"] == 0
+
+
+def test_save_then_load_round_trips(tmp_path):
+    cursor = {
+        "fingerprint": {"head": "abc", "checks": "d1"},
+        "step": 3,
+        "errors": 0,
+        "last_activity_at": "2026-08-22T10:00:00+00:00",
+        "last_changed": ["checks"],
+    }
+    watch_state.save("o/n", 7, cursor, str(tmp_path))
+    assert watch_state.load("o/n", 7, str(tmp_path)) == cursor
+
+
+def test_save_creates_missing_parent_directories(tmp_path):
+    nested = tmp_path / "deep" / "deeper"
+    watch_state.save("o/n", 7, dict(watch_state.DEFAULT_CURSOR), str(nested))
+    assert (nested / "o__n__7.json").exists()
+
+
+def test_load_falls_back_to_defaults_on_corrupt_json(tmp_path):
+    (tmp_path / "o__n__7.json").write_text("{not json at all")
+    assert watch_state.load("o/n", 7, str(tmp_path)) == watch_state.DEFAULT_CURSOR
+
+
+def test_load_falls_back_to_defaults_when_file_is_not_a_mapping(tmp_path):
+    (tmp_path / "o__n__7.json").write_text('["a", "list"]')
+    assert watch_state.load("o/n", 7, str(tmp_path)) == watch_state.DEFAULT_CURSOR
+
+
+def test_load_drops_unknown_keys_and_fills_missing_ones(tmp_path):
+    (tmp_path / "o__n__7.json").write_text('{"step": 4, "bogus": true}')
+    loaded = watch_state.load("o/n", 7, str(tmp_path))
+    assert loaded["step"] == 4
+    assert loaded["fingerprint"] is None
+    assert "bogus" not in loaded
+
+
+def test_clear_removes_the_cursor_and_reports_it(tmp_path):
+    watch_state.save("o/n", 7, dict(watch_state.DEFAULT_CURSOR), str(tmp_path))
+    assert watch_state.clear("o/n", 7, str(tmp_path)) is True
+    assert not (tmp_path / "o__n__7.json").exists()
+
+
+def test_clear_is_a_noop_when_no_cursor_exists(tmp_path):
+    assert watch_state.clear("o/n", 7, str(tmp_path)) is False
+
+
+def test_state_dir_honours_the_env_override(tmp_path, monkeypatch):
+    monkeypatch.setenv("EPIC_WATCH_DIR", str(tmp_path / "from-env"))
+    assert watch_state.cursor_path("o/n", 1).parent == tmp_path / "from-env"
+
+
+def test_explicit_override_beats_the_env_var(tmp_path, monkeypatch):
+    monkeypatch.setenv("EPIC_WATCH_DIR", str(tmp_path / "from-env"))
+    path = watch_state.cursor_path("o/n", 1, str(tmp_path / "explicit"))
+    assert path.parent == tmp_path / "explicit"
+
+
+def test_elapsed_s_measures_the_gap_between_two_iso_stamps():
+    assert watch_state.elapsed_s(
+        "2026-08-22T10:00:00+00:00", "2026-08-22T10:47:00+00:00"
+    ) == 2820
+
+
+def test_elapsed_s_accepts_githubs_trailing_z():
+    assert watch_state.elapsed_s(
+        "2026-08-22T10:00:00Z", "2026-08-22T10:00:30Z"
+    ) == 30
+
+
+def test_elapsed_s_returns_zero_when_there_is_no_prior_stamp():
+    assert watch_state.elapsed_s(None, "2026-08-22T10:00:00Z") == 0
+
+
+# CARRIED from Task 6's review: `elapsed_s` must never raise, no matter how
+# corrupt the stamp. `watch_state.load`'s type filter only checks that
+# `last_activity_at` is a str (or None) — it does not validate that the
+# string is a well-formed, timezone-aware ISO stamp. A value that survives
+# that filter (a naive stamp, or outright garbage) must not crash either
+# caller (`status.watch_report` or `pr_watch.main`'s "waiting" branch).
+def test_elapsed_s_returns_zero_for_a_naive_timestamp():
+    assert watch_state.elapsed_s(
+        "2026-08-22T10:13:00", "2026-08-22T11:00:00+00:00"
+    ) == 0
+
+
+def test_elapsed_s_returns_zero_for_a_garbage_string():
+    assert watch_state.elapsed_s("not-a-date", "2026-08-22T11:00:00+00:00") == 0
+
+
+def test_elapsed_s_returns_zero_for_wrong_type():
+    assert watch_state.elapsed_s(12345, "2026-08-22T11:00:00+00:00") == 0
+
+
+def test_elapsed_s_clamps_a_backwards_clock_to_zero():
+    assert watch_state.elapsed_s(
+        "2026-08-22T11:00:00+00:00", "2026-08-22T10:00:00+00:00"
+    ) == 0
+
+
+def test_load_rejects_wrong_type_for_step_and_keeps_defaults(tmp_path):
+    """A wrong-typed step falls back to 0 while a valid sibling key is adopted."""
+    (tmp_path / "o__n__7.json").write_text('{"step": "not an int", "errors": 5}')
+    loaded = watch_state.load("o/n", 7, str(tmp_path))
+    assert loaded["step"] == 0  # Invalid type, default kept
+    assert loaded["errors"] == 5  # Valid type, adopted
+
+
+def test_load_rejects_bool_for_step_even_though_bool_is_int_subclass(tmp_path):
+    """step must be int, not bool (which is technically an int in Python)."""
+    (tmp_path / "o__n__7.json").write_text('{"step": true}')
+    loaded = watch_state.load("o/n", 7, str(tmp_path))
+    assert loaded["step"] == 0
+
+
+def test_load_rejects_wrong_type_for_last_changed_falls_back_to_empty_list(tmp_path):
+    """A wrong-typed last_changed falls back to []."""
+    (tmp_path / "o__n__7.json").write_text('{"last_changed": "checks"}')
+    loaded = watch_state.load("o/n", 7, str(tmp_path))
+    assert loaded["last_changed"] == []
+
+
+def test_load_preserves_none_as_valid_for_nullable_fingerprint(tmp_path):
+    """None is explicitly valid for fingerprint even when stored."""
+    (tmp_path / "o__n__7.json").write_text('{"fingerprint": null}')
+    loaded = watch_state.load("o/n", 7, str(tmp_path))
+    assert loaded["fingerprint"] is None
+
+
+def test_load_preserves_none_as_valid_for_nullable_last_activity_at(tmp_path):
+    """None is explicitly valid for last_activity_at even when stored."""
+    (tmp_path / "o__n__7.json").write_text('{"last_activity_at": null}')
+    loaded = watch_state.load("o/n", 7, str(tmp_path))
+    assert loaded["last_activity_at"] is None
+
+
+def test_load_rejects_wrong_type_for_fingerprint_falls_back_to_none(tmp_path):
+    """A non-dict fingerprint is rejected; None is the default."""
+    (tmp_path / "o__n__7.json").write_text('{"fingerprint": "string not dict"}')
+    loaded = watch_state.load("o/n", 7, str(tmp_path))
+    assert loaded["fingerprint"] is None
+
+
+def test_load_rejects_wrong_type_for_last_activity_at_falls_back_to_none(tmp_path):
+    """A non-string last_activity_at is rejected; None is the default."""
+    (tmp_path / "o__n__7.json").write_text('{"last_activity_at": 123}')
+    loaded = watch_state.load("o/n", 7, str(tmp_path))
+    assert loaded["last_activity_at"] is None
+
+
+# --- pr_watch.py: the activity fingerprint --------------------------------
+# The watcher is a dumb change-detector; mergeability.py remains the sole
+# authority on what is actionable. So the fingerprint must move on ANY
+# observable PR activity — most importantly a COMMENTED review, which is
+# what CodeRabbit and Copilot actually post and which the old snapshot()
+# deliberately dropped.
+
+from pr_watch import FACETS, changed_facets
+from pr_watch import fingerprint as pr_fingerprint
+
+
+def _pr(**over):
+    base = {
+        "headRefOid": "a1b2c3",
+        "state": "OPEN",
+        "statusCheckRollup": [{"name": "ci", "status": "IN_PROGRESS", "conclusion": None}],
+        "reviews": [],
+        "comments": [],
+    }
+    base.update(over)
+    return base
+
+
+def test_fingerprint_is_stable_for_identical_input():
+    assert pr_fingerprint(_pr(), []) == pr_fingerprint(_pr(), [])
+
+
+def test_fingerprint_covers_every_facet():
+    assert set(pr_fingerprint(_pr(), [])) == set(FACETS)
+
+
+def test_fingerprint_ignores_rollup_ordering():
+    a = _pr(statusCheckRollup=[{"name": "ci"}, {"name": "lint"}])
+    b = _pr(statusCheckRollup=[{"name": "lint"}, {"name": "ci"}])
+    assert pr_fingerprint(a, [])["checks"] == pr_fingerprint(b, [])["checks"]
+
+
+def test_commented_review_moves_the_fingerprint():
+    """REGRESSION: the CodeRabbit stall.
+
+    The old snapshot() skipped COMMENTED reviews, so `--await coderabbitai`
+    waited out the full deadline and parked the child even though the
+    review had landed. CodeRabbit and Copilot post COMMENTED, never
+    APPROVED/CHANGES_REQUESTED, so this is the common case, not an edge one.
+    """
+    before = pr_fingerprint(_pr(), [])
+    after = pr_fingerprint(
+        _pr(reviews=[{
+            "author": {"login": "coderabbitai"},
+            "state": "COMMENTED",
+            "submittedAt": "2026-08-22T10:00:00Z",
+        }]),
+        [],
+    )
+    assert changed_facets(before, after) == ["reviews"]
+
+
+def test_head_change_is_detected():
+    assert changed_facets(pr_fingerprint(_pr(), []),
+                          pr_fingerprint(_pr(headRefOid="zzz"), [])) == ["head"]
+
+
+def test_check_conclusion_change_is_detected():
+    before = pr_fingerprint(_pr(), [])
+    after = pr_fingerprint(
+        _pr(statusCheckRollup=[{"name": "ci", "status": "COMPLETED",
+                                "conclusion": "SUCCESS"}]),
+        [],
+    )
+    assert changed_facets(before, after) == ["checks"]
+
+
+def test_legacy_status_context_shape_is_fingerprinted():
+    """StatusContext entries carry `context`/`state`, not `name`/`status`."""
+    before = pr_fingerprint(_pr(statusCheckRollup=[{"context": "cov", "state": "PENDING"}]), [])
+    after = pr_fingerprint(_pr(statusCheckRollup=[{"context": "cov", "state": "SUCCESS"}]), [])
+    assert changed_facets(before, after) == ["checks"]
+
+
+def test_new_thread_and_thread_resolution_both_move_threads():
+    empty = pr_fingerprint(_pr(), [])
+    opened = pr_fingerprint(_pr(), [{"id": "t1", "isResolved": False}])
+    resolved = pr_fingerprint(_pr(), [{"id": "t1", "isResolved": True}])
+    assert changed_facets(empty, opened) == ["threads"]
+    assert changed_facets(opened, resolved) == ["threads"]
+
+
+def test_new_comment_moves_the_comments_facet():
+    before = pr_fingerprint(_pr(), [])
+    after = pr_fingerprint(_pr(comments=[{"id": "c1"}]), [])
+    assert changed_facets(before, after) == ["comments"]
+
+
+def test_edited_comment_moves_the_comments_facet():
+    """Edited comment (same id, different body) is detected."""
+    before = pr_fingerprint(_pr(comments=[{"id": "c1", "body": "looks good"}]), [])
+    after = pr_fingerprint(_pr(comments=[{"id": "c1", "body": "actually, blocks merge"}]), [])
+    assert changed_facets(before, after) == ["comments"]
+
+
+def test_deleted_comment_moves_the_comments_facet():
+    """Deleted comment is detected."""
+    before = pr_fingerprint(_pr(comments=[{"id": "c1", "body": "nit"}]), [])
+    after = pr_fingerprint(_pr(comments=[]), [])
+    assert changed_facets(before, after) == ["comments"]
+
+
+def test_changed_facets_with_empty_dict_prev_reports_changes():
+    """Empty dict is a valid fingerprint; only None means arming."""
+    before = {}
+    after = pr_fingerprint(_pr(), [])
+    assert changed_facets(before, after) == list(FACETS)
+
+
+def test_author_may_be_a_plain_string():
+    """Some gh payloads flatten author to a login string."""
+    a = pr_fingerprint(_pr(reviews=[{"author": "octocat", "state": "APPROVED",
+                                  "submittedAt": "2026-08-22T10:00:00Z"}]), [])
+    b = pr_fingerprint(_pr(reviews=[{"author": {"login": "octocat"}, "state": "APPROVED",
+                                  "submittedAt": "2026-08-22T10:00:00Z"}]), [])
+    assert a["reviews"] == b["reviews"]
+
+
+def test_changed_facets_reports_multiple_moves_in_facet_order():
+    before = pr_fingerprint(_pr(), [])
+    after = pr_fingerprint(_pr(headRefOid="zzz", comments=[{"id": "c1"}]), [])
+    assert changed_facets(before, after) == ["head", "comments"]
+
+
+def test_changed_facets_is_empty_when_nothing_moved():
+    assert changed_facets(pr_fingerprint(_pr(), []), pr_fingerprint(_pr(), [])) == []
+
+
+def test_changed_facets_is_empty_when_there_is_no_previous_fingerprint():
+    """Arming a watch is not activity."""
+    assert changed_facets(None, pr_fingerprint(_pr(), [])) == []
+
+
+# --- pr_watch.py: exponential jittered backoff ----------------------------
+# Jitter is injected, not drawn, so the pure function stays deterministic
+# under test and main() owns the randomness. Desynchronising parallel wave
+# members is the whole point: the old 15/30/60 staircase had every child in
+# the wave polling in lockstep.
+
+from pr_watch import (
+    WATCH_CEIL_S,
+    WATCH_FLOOR_S,
+    backoff_delay,
+    error_backoff,
+)
+
+
+def test_backoff_delay_grows_exponentially_to_a_ceiling():
+    assert [backoff_delay(s) for s in range(8)] == [15, 27, 49, 87, 157, 283, 510, 900]
+
+
+def test_backoff_delay_stays_at_the_ceiling_forever():
+    assert backoff_delay(50) == WATCH_CEIL_S
+    assert backoff_delay(5000) == WATCH_CEIL_S
+
+
+def test_backoff_delay_starts_at_the_floor():
+    assert backoff_delay(0) == WATCH_FLOOR_S
+
+
+def test_negative_steps_clamp_to_the_floor():
+    assert backoff_delay(-3) == WATCH_FLOOR_S
+
+
+def test_jitter_spans_plus_or_minus_twenty_percent():
+    assert backoff_delay(7, -1.0) == 720
+    assert backoff_delay(7, 1.0) == 1080
+    assert backoff_delay(7, 0.0) == 900
+
+
+def test_delay_is_never_below_one_second():
+    assert backoff_delay(0, -1.0) >= 1
+
+
+def test_error_backoff_honours_retry_after():
+    stderr = "HTTP 403: You have exceeded a secondary rate limit\nRetry-After: 47"
+    assert error_backoff(1, stderr) == 47
+
+
+def test_error_backoff_caps_retry_after_at_the_ceiling():
+    assert error_backoff(1, "Retry-After: 99999") == WATCH_CEIL_S
+
+
+def test_error_backoff_honours_ratelimit_reset_as_an_absolute_epoch():
+    stderr = "HTTP 403: rate limit exceeded\nx-ratelimit-reset: 1000300"
+    assert error_backoff(1, stderr, now_epoch=1000000) == 300
+
+
+def test_error_backoff_ignores_an_already_past_ratelimit_reset():
+    stderr = "x-ratelimit-reset: 900"
+    assert error_backoff(0, stderr, now_epoch=1000) == 1
+
+
+def test_error_backoff_falls_back_to_the_exponential_ladder():
+    assert error_backoff(3, "HTTP 502: Bad Gateway") == backoff_delay(3)
+
+
+def test_error_backoff_tolerates_empty_stderr():
+    assert error_backoff(2, "") == backoff_delay(2)
+    assert error_backoff(2, None) == backoff_delay(2)
+
+
+def test_jitter_applied_to_still_growing_value():
+    """Jitter applies to exponential values before they hit ceiling."""
+    # Step 3 gives 87s (before jitter), not yet clamped; jitter should spread it.
+    assert backoff_delay(3, -1.0) == 70
+    assert backoff_delay(3, 1.0) == 105
+    assert backoff_delay(3, 0.0) == 87
+
+
+def test_error_backoff_retry_after_takes_precedence():
+    """Retry-After wins over x-ratelimit-reset when both present."""
+    stderr = "x-ratelimit-reset: 1000300\nRetry-After: 47"
+    assert error_backoff(1, stderr, now_epoch=1000000) == 47
+
+
+def test_error_backoff_jittered_ladder_fallback_is_symmetric():
+    """Ladder fallback applies symmetric jitter, same as backoff_delay."""
+    assert error_backoff(3, "HTTP 502", jitter=-1.0) == backoff_delay(3, -1.0)
+    assert error_backoff(3, "HTTP 502", jitter=1.0) == backoff_delay(3, 1.0)
+    assert error_backoff(3, "HTTP 502", jitter=0.0) == backoff_delay(3, 0.0)
+
+
+def test_error_backoff_retry_after_jitter_is_positive_only():
+    """Retry-After never waits less than GitHub asked; jitter spreads above."""
+    # 47 seconds, jittered by ±20% but only positive: [47, 47*1.2] = [47, 56.4]
+    base = 47
+    assert error_backoff(1, "Retry-After: 47", jitter=-1.0) == base  # 47 * (1 + 0.2 * abs(-1.0)) but min is base
+    assert error_backoff(1, "Retry-After: 47", jitter=1.0) == round(base * (1 + 0.2))  # 56
+    assert error_backoff(1, "Retry-After: 47", jitter=0.0) == base
+
+
+def test_error_backoff_ratelimit_reset_jitter_is_positive_only():
+    """x-ratelimit-reset never waits less than GitHub said; jitter spreads above."""
+    # Epoch diff is 300s, jittered by ±20% but only positive: [300, 300*1.2] = [300, 360]
+    stderr = "x-ratelimit-reset: 1000300"
+    assert error_backoff(1, stderr, now_epoch=1000000, jitter=-1.0) == 300
+    assert error_backoff(1, stderr, now_epoch=1000000, jitter=1.0) == 360
+    assert error_backoff(1, stderr, now_epoch=1000000, jitter=0.0) == 300
+
+
+# --- pr_watch.py: one invocation is one tick ------------------------------
+# main() never sleeps. It loads the cursor, fetches once, and either
+# reports activity (exit 0) or reports how long until the next tick
+# (exit 1). That is what makes a wait survivable: no long-lived process to
+# be killed, and a cursor cheap enough to lose.
+
+import pr_watch as _pw
+
+
+def _install_tick(monkeypatch, pr, threads, now="2026-08-22T10:00:00+00:00"):
+    monkeypatch.setattr(_pw, "_fetch", lambda repo, number: (pr, threads))
+    monkeypatch.setattr(_pw, "_now", lambda: now)
+    monkeypatch.setattr(_pw.random, "uniform", lambda lo, hi: 0.0)
+
+
+def test_first_tick_arms_the_watch_and_asks_for_another(tmp_path, monkeypatch, capsys):
+    _install_tick(monkeypatch, _pr(), [])
+    code = _pw.main(["--repo", "o/n", "--pr", "7", "--state-dir", str(tmp_path)])
+    event = json.loads(capsys.readouterr().out)
+    assert code == 1
+    assert event["event"] == "waiting"
+    assert event["armed"] is True
+    assert event["next_tick_in_s"] == 15
+    assert watch_state.load("o/n", 7, str(tmp_path))["fingerprint"] is not None
+
+
+def test_quiet_tick_advances_the_backoff_step(tmp_path, monkeypatch, capsys):
+    _install_tick(monkeypatch, _pr(), [])
+    args = ["--repo", "o/n", "--pr", "7", "--state-dir", str(tmp_path)]
+    _pw.main(args)                      # arm at step 0
+    capsys.readouterr()
+    assert _pw.main(args) == 1
+    event = json.loads(capsys.readouterr().out)
+    assert event["next_tick_in_s"] == 27
+    assert watch_state.load("o/n", 7, str(tmp_path))["step"] == 1
+
+
+def test_quiet_tick_reports_how_long_the_pr_has_been_silent(tmp_path, monkeypatch, capsys):
+    _install_tick(monkeypatch, _pr(), [], now="2026-08-22T10:00:00+00:00")
+    args = ["--repo", "o/n", "--pr", "7", "--state-dir", str(tmp_path)]
+    _pw.main(args)
+    capsys.readouterr()
+    monkeypatch.setattr(_pw, "_now", lambda: "2026-08-22T10:47:00+00:00")
+    _pw.main(args)
+    assert json.loads(capsys.readouterr().out)["quiet_s"] == 2820
+
+
+def test_a_commented_review_ends_the_wait(tmp_path, monkeypatch, capsys):
+    """REGRESSION: the end-to-end form of the CodeRabbit stall."""
+    args = ["--repo", "o/n", "--pr", "7", "--state-dir", str(tmp_path)]
+    _install_tick(monkeypatch, _pr(), [])
+    _pw.main(args)
+    capsys.readouterr()
+    _install_tick(monkeypatch, _pr(reviews=[{
+        "author": {"login": "coderabbitai"}, "state": "COMMENTED",
+        "submittedAt": "2026-08-22T10:05:00Z"}]), [])
+    code = _pw.main(args)
+    event = json.loads(capsys.readouterr().out)
+    assert code == 0
+    assert event["event"] == "activity"
+    assert event["changed"] == ["reviews"]
+
+
+def test_an_empty_rollup_reports_waiting_not_settled(tmp_path, monkeypatch, capsys):
+    """REGRESSION: the instant false positive.
+
+    The old settled_event() treated an empty check rollup ("NONE") and zero
+    unresolved threads as terminal, so a watch armed seconds after PR open
+    returned "settled" before CI had even registered.
+    """
+    _install_tick(monkeypatch, _pr(statusCheckRollup=[]), [])
+    code = _pw.main(["--repo", "o/n", "--pr", "7", "--state-dir", str(tmp_path)])
+    assert code == 1
+    assert json.loads(capsys.readouterr().out)["event"] == "waiting"
+
+
+def test_head_change_resets_the_backoff_to_the_floor(tmp_path, monkeypatch, capsys):
+    args = ["--repo", "o/n", "--pr", "7", "--state-dir", str(tmp_path)]
+    _install_tick(monkeypatch, _pr(), [])
+    _pw.main(args)
+    _pw.main(args)
+    _pw.main(args)                      # step is now 2
+    capsys.readouterr()
+    _install_tick(monkeypatch, _pr(headRefOid="newsha"), [])
+    _pw.main(args)
+    capsys.readouterr()
+    assert watch_state.load("o/n", 7, str(tmp_path))["step"] == 0
+
+
+def test_comment_noise_does_not_reset_the_backoff(tmp_path, monkeypatch, capsys):
+    """A chatty PR must not pin the watch at the fast tier."""
+    args = ["--repo", "o/n", "--pr", "7", "--state-dir", str(tmp_path)]
+    _install_tick(monkeypatch, _pr(), [])
+    _pw.main(args)
+    _pw.main(args)
+    _pw.main(args)                      # step is now 2
+    capsys.readouterr()
+    _install_tick(monkeypatch, _pr(comments=[{"id": "c1"}]), [])
+    _pw.main(args)
+    capsys.readouterr()
+    assert watch_state.load("o/n", 7, str(tmp_path))["step"] == 2
+
+
+def test_reset_backoff_forces_the_floor(tmp_path, monkeypatch, capsys):
+    args = ["--repo", "o/n", "--pr", "7", "--state-dir", str(tmp_path)]
+    _install_tick(monkeypatch, _pr(), [])
+    _pw.main(args)
+    _pw.main(args)
+    _pw.main(args)
+    capsys.readouterr()
+    _pw.main(args + ["--reset-backoff"])
+    assert json.loads(capsys.readouterr().out)["next_tick_in_s"] == 15
+    assert watch_state.load("o/n", 7, str(tmp_path))["step"] == 0
+
+
+def test_resume_backoff_continues_from_the_stored_step(tmp_path, monkeypatch, capsys):
+    args = ["--repo", "o/n", "--pr", "7", "--state-dir", str(tmp_path)]
+    _install_tick(monkeypatch, _pr(), [])
+    _pw.main(args)
+    _pw.main(args)                      # step is now 1
+    capsys.readouterr()
+    _pw.main(args + ["--resume-backoff"])
+    assert json.loads(capsys.readouterr().out)["next_tick_in_s"] == 49
+
+
+def test_activity_records_what_moved_on_the_cursor(tmp_path, monkeypatch, capsys):
+    args = ["--repo", "o/n", "--pr", "7", "--state-dir", str(tmp_path)]
+    _install_tick(monkeypatch, _pr(), [])
+    _pw.main(args)
+    capsys.readouterr()
+    _install_tick(monkeypatch, _pr(statusCheckRollup=[
+        {"name": "ci", "status": "COMPLETED", "conclusion": "SUCCESS"}]), [])
+    _pw.main(args)
+    capsys.readouterr()
+    assert watch_state.load("o/n", 7, str(tmp_path))["last_changed"] == ["checks"]
+
+
+def test_a_closed_pr_ends_the_watch_and_clears_the_cursor(tmp_path, monkeypatch, capsys):
+    args = ["--repo", "o/n", "--pr", "7", "--state-dir", str(tmp_path)]
+    _install_tick(monkeypatch, _pr(), [])
+    _pw.main(args)
+    capsys.readouterr()
+    _install_tick(monkeypatch, _pr(state="MERGED"), [])
+    code = _pw.main(args)
+    event = json.loads(capsys.readouterr().out)
+    assert code == 0
+    assert event["event"] == "pr-closed"
+    assert event["state"] == "MERGED"
+    assert not watch_state.cursor_path("o/n", 7, str(tmp_path)).exists()
+
+
+def test_the_tick_never_sleeps(tmp_path, monkeypatch, capsys):
+    """The stall this whole rewrite exists to fix: a blocking wait cannot
+    outlive its tool call, so main() must not block at all."""
+    _install_tick(monkeypatch, _pr(), [])
+    monkeypatch.setattr(
+        _pw.time, "sleep",
+        lambda *a: pytest.fail("main() must never sleep"),
+        raising=False,
+    )
+    _pw.main(["--repo", "o/n", "--pr", "7", "--state-dir", str(tmp_path)])
+
+
+# --- pr_watch.py: a flaky gh must not end the watch -----------------------
+# A transient 502 or a secondary rate limit is a reason to wait longer, not
+# a reason to abandon a PR. Only a sustained outage (8 consecutive
+# failures) is fatal.
+
+def _failing_fetch(monkeypatch, stderr, now="2026-08-22T10:00:00+00:00"):
+    def boom(repo, number):
+        raise gh.GhError(1, stderr)
+    monkeypatch.setattr(_pw, "_fetch", boom)
+    monkeypatch.setattr(_pw, "_now", lambda: now)
+    monkeypatch.setattr(_pw.random, "uniform", lambda lo, hi: 0.0)
+
+
+def test_a_transient_gh_error_asks_for_another_tick(tmp_path, monkeypatch, capsys):
+    _failing_fetch(monkeypatch, "HTTP 502: Bad Gateway")
+    code = _pw.main(["--repo", "o/n", "--pr", "7", "--state-dir", str(tmp_path)])
+    event = json.loads(capsys.readouterr().out)
+    assert code == 1
+    assert event["event"] == "waiting"
+    assert event["reason"] == "gh-error"
+    assert event["consecutive_errors"] == 1
+
+
+def test_consecutive_errors_accumulate_across_ticks(tmp_path, monkeypatch, capsys):
+    _failing_fetch(monkeypatch, "HTTP 502: Bad Gateway")
+    args = ["--repo", "o/n", "--pr", "7", "--state-dir", str(tmp_path)]
+    _pw.main(args)
+    _pw.main(args)
+    capsys.readouterr()
+    _pw.main(args)
+    assert json.loads(capsys.readouterr().out)["consecutive_errors"] == 3
+
+
+def test_a_secondary_rate_limit_waits_exactly_as_long_as_github_asks(
+    tmp_path, monkeypatch, capsys
+):
+    _failing_fetch(monkeypatch, "HTTP 403: secondary rate limit\nRetry-After: 47")
+    _pw.main(["--repo", "o/n", "--pr", "7", "--state-dir", str(tmp_path)])
+    assert json.loads(capsys.readouterr().out)["next_tick_in_s"] == 47
+
+
+def test_gh_error_jitter_flows_into_error_backoff(tmp_path, monkeypatch, capsys):
+    """main() must pass main()'s drawn jitter into error_backoff as the
+    fourth (jitter) positional argument, not swap it with now_epoch or drop
+    it. Retry-After: 47 with jitter pinned to +1.0 (full positive spread on
+    the positive-only branch) must land at exactly 47 * 1.2 == 56 -- any
+    other wiring of the call (argument omitted, or swapped with
+    int(time.time())) produces a different number."""
+    _failing_fetch(monkeypatch, "HTTP 403: secondary rate limit\nRetry-After: 47")
+    monkeypatch.setattr(_pw.random, "uniform", lambda lo, hi: 1.0)
+    _pw.main(["--repo", "o/n", "--pr", "7", "--state-dir", str(tmp_path)])
+    assert json.loads(capsys.readouterr().out)["next_tick_in_s"] == 56
+
+
+def test_a_successful_tick_clears_the_error_count(tmp_path, monkeypatch, capsys):
+    args = ["--repo", "o/n", "--pr", "7", "--state-dir", str(tmp_path)]
+    _failing_fetch(monkeypatch, "HTTP 502: Bad Gateway")
+    _pw.main(args)
+    _pw.main(args)
+    capsys.readouterr()
+    assert watch_state.load("o/n", 7, str(tmp_path))["errors"] == 2
+    _install_tick(monkeypatch, _pr(), [])
+    _pw.main(args)
+    capsys.readouterr()
+    assert watch_state.load("o/n", 7, str(tmp_path))["errors"] == 0
+
+
+def test_a_sustained_outage_is_finally_fatal(tmp_path, monkeypatch, capsys):
+    _failing_fetch(monkeypatch, "HTTP 502: Bad Gateway")
+    args = ["--repo", "o/n", "--pr", "7", "--state-dir", str(tmp_path)]
+    for _ in range(_pw._MAX_ERRORS - 1):
+        assert _pw.main(args) == 1
+    capsys.readouterr()
+    code = _pw.main(args)
+    event = json.loads(capsys.readouterr().out)
+    assert code == 2
+    assert event["event"] == "error"
+    assert event["consecutive"] == _pw._MAX_ERRORS
+
+
+def test_stop_deletes_the_cursor(tmp_path, monkeypatch, capsys):
+    _install_tick(monkeypatch, _pr(), [])
+    args = ["--repo", "o/n", "--pr", "7", "--state-dir", str(tmp_path)]
+    _pw.main(args)
+    capsys.readouterr()
+    code = _pw.main(args + ["--stop"])
+    event = json.loads(capsys.readouterr().out)
+    assert code == 0
+    assert event["event"] == "stopped"
+    assert event["cursor_removed"] is True
+    assert not watch_state.cursor_path("o/n", 7, str(tmp_path)).exists()
+
+
+def test_stop_on_an_unwatched_pr_is_harmless(tmp_path, capsys):
+    code = _pw.main(["--repo", "o/n", "--pr", "9", "--state-dir", str(tmp_path), "--stop"])
+    assert code == 0
+    assert json.loads(capsys.readouterr().out)["cursor_removed"] is False
+
+
+def test_reset_backoff_persists_across_a_failed_fetch(tmp_path, monkeypatch, capsys):
+    """CARRIED from Task 4's review: main() applied --reset-backoff's
+    cursor["step"] = 0 in memory, but the old error branch returned without
+    saving, so the reset was silently lost if the fetch happened to fail."""
+    args = ["--repo", "o/n", "--pr", "7", "--state-dir", str(tmp_path)]
+    _install_tick(monkeypatch, _pr(), [])
+    _pw.main(args)
+    _pw.main(args)
+    _pw.main(args)                      # step is now 2
+    capsys.readouterr()
+    _failing_fetch(monkeypatch, "HTTP 502: Bad Gateway")
+    _pw.main(args + ["--reset-backoff"])
+    capsys.readouterr()
+    assert watch_state.load("o/n", 7, str(tmp_path))["step"] == 0
+
+
+# --- pr_watch.py: main() must never exit with no JSON on stdout ----------
+# The whole rewrite exists to eliminate a silent stall: an uncaught
+# exception used to exit 1 (or crash) with NOTHING printed on stdout, so
+# the driver read exit 1 as "no activity yet, schedule the next tick" and
+# then crashed on the absent next_tick_in_s. Any exception besides
+# gh.GhError must still emit exactly one JSON object and exit 2 -- the
+# documented hard-error code -- never escape uncaught.
+
+def test_a_null_pull_request_in_the_graphql_response_still_emits_json(
+    tmp_path, monkeypatch, capsys
+):
+    """A null `pullRequest` (deleted/inaccessible PR) makes `_fetch` raise
+    TypeError deep inside fingerprinting. That must not escape main()."""
+    def boom(repo, number):
+        raise TypeError("'NoneType' object is not subscriptable")
+    monkeypatch.setattr(_pw, "_fetch", boom)
+    code = _pw.main(["--repo", "o/n", "--pr", "7", "--state-dir", str(tmp_path)])
+    event = json.loads(capsys.readouterr().out)
+    assert code == 2
+    assert event["event"] == "error"
+    assert "NoneType" in event["detail"]
+
+
+def test_a_malformed_repo_value_still_emits_json(tmp_path, capsys):
+    """A `--repo` with no `/` makes `repo.split("/")` raise ValueError on
+    the very first line of `_fetch`, before any `gh` call. That must not
+    escape main() either."""
+    code = _pw.main(
+        ["--repo", "not-a-valid-repo", "--pr", "7", "--state-dir", str(tmp_path)]
+    )
+    event = json.loads(capsys.readouterr().out)
+    assert code == 2
+    assert event["event"] == "error"
+
+
+# --- status.py: which watches have gone quiet -----------------------------
+# A long silence is REPORTED, never parked. This is the replacement for the
+# deadline-to-park circuit breaker: the run stays alive and the operator
+# gets told which gate has gone quiet and for how long.
+
+from status import watch_report
+
+_NOW = "2026-08-22T11:00:00+00:00"
+
+
+def test_watch_report_names_the_pr_and_how_long_it_has_been_quiet():
+    children = [{"number": 12, "pr": {"state": "OPEN", "number": 34}}]
+    cursors = {12: {"last_activity_at": "2026-08-22T10:13:00+00:00",
+                    "last_changed": ["checks"]}}
+    assert watch_report(children, cursors, _NOW) == [
+        {"child": 12, "pr": 34, "quiet_s": 2820, "last_activity": ["checks"]}
+    ]
+
+
+def test_watch_report_skips_children_without_an_open_pr():
+    children = [
+        {"number": 1, "pr": None},
+        {"number": 2, "pr": {"state": "MERGED", "number": 20}},
+    ]
+    cursors = {1: {"last_activity_at": _NOW, "last_changed": []},
+               2: {"last_activity_at": _NOW, "last_changed": []}}
+    assert watch_report(children, cursors, _NOW) == []
+
+
+def test_watch_report_skips_children_with_no_cursor():
+    children = [{"number": 12, "pr": {"state": "OPEN", "number": 34}}]
+    assert watch_report(children, {}, _NOW) == []
+
+
+def test_watch_report_skips_a_cursor_that_never_recorded_activity():
+    children = [{"number": 12, "pr": {"state": "OPEN", "number": 34}}]
+    cursors = {12: {"last_activity_at": None, "last_changed": []}}
+    assert watch_report(children, cursors, _NOW) == []
+
+
+def test_watch_report_is_ordered_by_child_number():
+    children = [
+        {"number": 9, "pr": {"state": "OPEN", "number": 90}},
+        {"number": 3, "pr": {"state": "OPEN", "number": 30}},
+    ]
+    cursors = {
+        9: {"last_activity_at": _NOW, "last_changed": []},
+        3: {"last_activity_at": _NOW, "last_changed": []},
+    }
+    assert [w["child"] for w in watch_report(children, cursors, _NOW)] == [3, 9]
+
+
+def test_status_cli_includes_the_watch_report(tmp_path, monkeypatch, capsys):
+    import status
+
+    children = [{"number": 12, "state": "OPEN", "repo": "o/n", "status": "In Review",
+                 "pr": {"state": "OPEN", "number": 34}, "branch": "feat/12"}]
+    monkeypatch.setattr(status, "_fetch",
+                        lambda repo, epic: (children, {"state": "OPEN", "status": None}))
+    monkeypatch.setattr(status, "_now", lambda: _NOW)
+    monkeypatch.setenv("EPIC_WATCH_DIR", str(tmp_path))
+    watch_state.save("o/n", 34, {
+        "fingerprint": {"head": "a"}, "step": 4, "errors": 0,
+        "last_activity_at": "2026-08-22T10:13:00+00:00", "last_changed": ["checks"],
+    }, str(tmp_path))
+
+    code = status.main(["--epic", "1", "--repo", "o/n"])
+    payload = json.loads(capsys.readouterr().out)
+    assert code == 0
+    assert payload["watches"] == [
+        {"child": 12, "pr": 34, "quiet_s": 2820, "last_activity": ["checks"]}
+    ]
+
+
+# --- Task 6 review fixes: a corrupt cursor can never take down a live run --
+
+def test_status_cli_survives_a_corrupt_cursor_for_one_child(tmp_path, monkeypatch, capsys):
+    """Finding 1 (Task 6 review): `epic/scripts/status.py` called
+    `watch_state.elapsed_s` unguarded, so a `last_activity_at` that survived
+    `watch_state.load`'s type filter but wasn't a valid aware ISO stamp (a
+    naive stamp, here) raised out of `main()` and took `complete`/`drift`/
+    `sweep_plan` down with it. Now that `elapsed_s` itself never raises,
+    `main()` keeps reporting everything else correctly and the affected
+    watch reports `quiet_s: 0` instead of crashing the whole payload."""
+    import status
+
+    children = [{"number": 12, "state": "CLOSED", "repo": "o/n", "status": "Done",
+                 "pr": {"state": "OPEN", "number": 34}, "branch": "feat/12"}]
+    monkeypatch.setattr(status, "_fetch",
+                        lambda repo, epic: (children, {"state": "OPEN", "status": None}))
+    monkeypatch.setattr(status, "_now", lambda: _NOW)
+    monkeypatch.setenv("EPIC_WATCH_DIR", str(tmp_path))
+    watch_state.save("o/n", 34, {
+        "fingerprint": {"head": "a"}, "step": 4, "errors": 0,
+        "last_activity_at": "2026-08-22T10:13:00", "last_changed": ["checks"],
+    }, str(tmp_path))
+
+    code = status.main(["--epic", "1", "--repo", "o/n"])
+    payload = json.loads(capsys.readouterr().out)
+    assert code == 0
+    assert payload["complete"] is True
+    assert payload["drift"] == []
+    assert payload["sweep_plan"] == []
+    assert payload["watches"] == [
+        {"child": 12, "pr": 34, "quiet_s": 0, "last_activity": ["checks"]}
+    ]
+
+
+def test_a_corrupt_last_activity_at_does_not_crash_the_tick(tmp_path, monkeypatch, capsys):
+    """Finding 1 (Task 6 review): the same unguarded `elapsed_s` call sits in
+    `pr_watch.py`'s "waiting" branch too. A naive `last_activity_at` that
+    survives `watch_state.load`'s type filter used to raise out of main(),
+    which exits with a traceback and NO JSON on stdout — precisely the
+    no-output stall this whole rewrite exists to eliminate. The tick must
+    still emit its JSON and its normal exit code."""
+    watch_state.save("o/n", 7, {
+        "fingerprint": pr_fingerprint(_pr(), []), "step": 0, "errors": 0,
+        "last_activity_at": "2026-08-22T10:13:00", "last_changed": [],
+    }, str(tmp_path))
+    _install_tick(monkeypatch, _pr(), [])
+    code = _pw.main(["--repo", "o/n", "--pr", "7", "--state-dir", str(tmp_path)])
+    event = json.loads(capsys.readouterr().out)
+    assert code == 1
+    assert event["event"] == "waiting"
+    assert event["quiet_s"] == 0
+
+
+def test_an_armed_cursor_with_no_last_activity_at_reports_zero_quiet(
+    tmp_path, monkeypatch, capsys
+):
+    """Coverage gap named in the whole-branch review: an already-armed
+    cursor (fingerprint set) that has somehow lost its `last_activity_at`
+    (hand-edited cursor, or a future field predating this one) makes
+    `elapsed_s()` report `quiet_s: 0` on a quiet tick -- indistinguishable
+    from a watch that just saw fresh activity. This pins that behaviour as
+    known and deliberate rather than an unnoticed accident; it is not a
+    fix, since the cursor's own docstring already treats a missing/invalid
+    field as "start fresh" rather than an error."""
+    watch_state.save("o/n", 7, {
+        "fingerprint": pr_fingerprint(_pr(), []), "step": 3, "errors": 0,
+        "last_activity_at": None, "last_changed": [],
+    }, str(tmp_path))
+    _install_tick(monkeypatch, _pr(), [])
+    code = _pw.main(["--repo", "o/n", "--pr", "7", "--state-dir", str(tmp_path)])
+    event = json.loads(capsys.readouterr().out)
+    assert code == 1
+    assert event["event"] == "waiting"
+    assert event["quiet_s"] == 0
+    assert "armed" not in event
+
+
+def test_fetch_carries_the_pr_number_alongside_state(monkeypatch):
+    """Finding 2 (Task 6 review, Minor): `_fetch` grew `pr["number"]`
+    alongside `pr["state"]` so `watch_report` can name the PR, but nothing
+    pinned it — the CLI test monkeypatches `_fetch` away entirely, and the
+    pre-existing `_fetch` tests only assert on `sweep_plan`. Revert the
+    `"number"` key and this is the only test that catches it."""
+    from status import _fetch
+
+    data = {
+        "repository": {"issue": {
+            "state": "OPEN",
+            "projectItems": {"nodes": []},
+            "subIssues": {"nodes": [
+                {"number": 12, "state": "OPEN", "projectItems": {"nodes": []}},
+            ]},
+        }}
+    }
+    pr_map = {"repository": {"pullRequests": {"nodes": [
+        {"number": 34, "state": "OPEN", "headRefName": "feat/12",
+         "closingIssuesReferences": {"nodes": [{"number": 12}]}},
+    ]}}}
+    responses = iter([data, pr_map])
+    monkeypatch.setattr(gh_module, "graphql", lambda query, **kw: next(responses))
+
+    children, _ = _fetch("acme/planning", 42)
+    assert children[0]["pr"] == {"state": "OPEN", "number": 34}
