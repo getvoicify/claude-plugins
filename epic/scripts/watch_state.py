@@ -45,7 +45,12 @@ def load(repo, pr, override=None):
     if not isinstance(data, dict):
         return _default()
     cursor = _default()
-    cursor.update({k: data[k] for k in DEFAULT_CURSOR if k in data})
+    for k in DEFAULT_CURSOR:
+        if k not in data:
+            continue
+        if not _is_valid_type(k, data[k]):
+            continue
+        cursor[k] = data[k]
     return cursor
 
 
@@ -72,6 +77,24 @@ def elapsed_s(then_iso, now_iso):
     if not then_iso:
         return 0
     return int((_parse(now_iso) - _parse(then_iso)).total_seconds())
+
+
+def _is_valid_type(key, value):
+    """Check if a stored value has the correct type for its cursor field."""
+    if key in ("fingerprint", "last_activity_at"):
+        # These fields are nullable; None or their expected type is valid
+        if value is None:
+            return True
+        if key == "fingerprint":
+            return isinstance(value, dict)
+        if key == "last_activity_at":
+            return isinstance(value, str)
+    elif key == "step" or key == "errors":
+        # Integers, but reject bool (which is an int subclass in Python)
+        return isinstance(value, int) and not isinstance(value, bool)
+    elif key == "last_changed":
+        return isinstance(value, list)
+    return False
 
 
 def _default():

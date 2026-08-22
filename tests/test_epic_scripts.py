@@ -2608,3 +2608,53 @@ def test_elapsed_s_accepts_githubs_trailing_z():
 
 def test_elapsed_s_returns_zero_when_there_is_no_prior_stamp():
     assert watch_state.elapsed_s(None, "2026-08-22T10:00:00Z") == 0
+
+
+def test_load_rejects_wrong_type_for_step_and_keeps_defaults(tmp_path):
+    """A wrong-typed step falls back to 0 while a valid sibling key is adopted."""
+    (tmp_path / "o__n__7.json").write_text('{"step": "not an int", "errors": 5}')
+    loaded = watch_state.load("o/n", 7, str(tmp_path))
+    assert loaded["step"] == 0  # Invalid type, default kept
+    assert loaded["errors"] == 5  # Valid type, adopted
+
+
+def test_load_rejects_bool_for_step_even_though_bool_is_int_subclass(tmp_path):
+    """step must be int, not bool (which is technically an int in Python)."""
+    (tmp_path / "o__n__7.json").write_text('{"step": true}')
+    loaded = watch_state.load("o/n", 7, str(tmp_path))
+    assert loaded["step"] == 0
+
+
+def test_load_rejects_wrong_type_for_last_changed_falls_back_to_empty_list(tmp_path):
+    """A wrong-typed last_changed falls back to []."""
+    (tmp_path / "o__n__7.json").write_text('{"last_changed": "checks"}')
+    loaded = watch_state.load("o/n", 7, str(tmp_path))
+    assert loaded["last_changed"] == []
+
+
+def test_load_preserves_none_as_valid_for_nullable_fingerprint(tmp_path):
+    """None is explicitly valid for fingerprint even when stored."""
+    (tmp_path / "o__n__7.json").write_text('{"fingerprint": null}')
+    loaded = watch_state.load("o/n", 7, str(tmp_path))
+    assert loaded["fingerprint"] is None
+
+
+def test_load_preserves_none_as_valid_for_nullable_last_activity_at(tmp_path):
+    """None is explicitly valid for last_activity_at even when stored."""
+    (tmp_path / "o__n__7.json").write_text('{"last_activity_at": null}')
+    loaded = watch_state.load("o/n", 7, str(tmp_path))
+    assert loaded["last_activity_at"] is None
+
+
+def test_load_rejects_wrong_type_for_fingerprint_falls_back_to_none(tmp_path):
+    """A non-dict fingerprint is rejected; None is the default."""
+    (tmp_path / "o__n__7.json").write_text('{"fingerprint": "string not dict"}')
+    loaded = watch_state.load("o/n", 7, str(tmp_path))
+    assert loaded["fingerprint"] is None
+
+
+def test_load_rejects_wrong_type_for_last_activity_at_falls_back_to_none(tmp_path):
+    """A non-string last_activity_at is rejected; None is the default."""
+    (tmp_path / "o__n__7.json").write_text('{"last_activity_at": 123}')
+    loaded = watch_state.load("o/n", 7, str(tmp_path))
+    assert loaded["last_activity_at"] is None
